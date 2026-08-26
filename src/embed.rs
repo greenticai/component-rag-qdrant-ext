@@ -63,6 +63,18 @@ pub fn parse_embed_response(
     let mut items = parsed.data;
     items.sort_by_key(|item| item.index);
 
+    // Sorting alone does not prove the indices are `0..n`. Two items both
+    // reporting the same index would sort adjacent and pass the length check
+    // in `embed_all`, silently pairing one chunk's text with another's
+    // vector. Require the indices to be exactly `0..n` — contiguous, no
+    // duplicates, no gaps.
+    if items.iter().enumerate().any(|(i, item)| item.index != i) {
+        return Err(RagError::Internal(format!(
+            "embeddings response indices are not contiguous from 0: {:?}",
+            items.iter().map(|item| item.index).collect::<Vec<_>>()
+        )));
+    }
+
     let expected = expected_dim as usize;
     for item in &items {
         if item.embedding.len() != expected {
@@ -145,6 +157,18 @@ mod tests {
     #[test]
     fn a_200_with_a_non_json_body_is_internal_not_a_panic() {
         let err = parse_embed_response(200, b"<html>nope</html>", 3).unwrap_err();
+        assert!(matches!(err, RagError::Internal(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn a_duplicated_index_is_internal_not_silently_mispaired() {
+        // Both items claim index 0: same length as `texts` in `embed_all`, so
+        // only the contiguity check catches this.
+        let body = br#"{"data":[
+            {"index":0,"embedding":[0.1,0.2,0.3]},
+            {"index":0,"embedding":[0.4,0.5,0.6]}
+        ]}"#;
+        let err = parse_embed_response(200, body, 3).unwrap_err();
         assert!(matches!(err, RagError::Internal(_)), "got {err:?}");
     }
 }
