@@ -198,8 +198,13 @@ pub fn parse_ack(status: u16, body: &[u8]) -> Result<(), RagError> {
 /// # Errors
 /// See [`status_error`], minus the already-exists case.
 pub fn parse_ensure_ack(status: u16, body: &[u8]) -> Result<(), RagError> {
+    // Both halves of this condition are load-bearing. Gating on 4xx stops a 5xx
+    // whose body merely mentions the phrase ("existence check timed out, the
+    // collection may already exist") from being swallowed as success. Requiring
+    // the phrase even on a 409 stops an unrelated conflict — a collection locked
+    // during snapshot restore — from passing as "already there".
     let text = String::from_utf8_lossy(body).to_ascii_lowercase();
-    if status == 409 || text.contains("already exists") {
+    if (400..500).contains(&status) && text.contains("already exists") {
         return Ok(());
     }
     parse_ack(status, body)
@@ -371,11 +376,16 @@ mod tests {
     fn creating_a_collection_that_already_exists_counts_as_success() {
         // Ensure is called on every ingest, so "already exists" is the normal
         // case, not an error.
-        assert!(parse_ensure_ack(409, b"already exists").is_ok());
+        assert!(parse_ensure_ack(409, b"Collection `kb` already exists!").is_ok());
         assert!(
             parse_ensure_ack(400, br#"{"status":{"error":"Collection `kb` already exists!"}}"#)
                 .is_ok()
         );
         assert!(parse_ensure_ack(400, br#"{"status":{"error":"bad dim"}}"#).is_err());
+        // A 5xx that merely mentions the phrase is still a failure — otherwise
+        // every ingest would proceed against a collection that may not exist.
+        assert!(parse_ensure_ack(503, b"retry: it may already exist").is_err());
+        // A 409 that is not an already-exists conflict is still a failure.
+        assert!(parse_ensure_ack(409, b"collection is locked for snapshot").is_err());
     }
 }
