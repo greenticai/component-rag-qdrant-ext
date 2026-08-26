@@ -212,6 +212,13 @@ pub fn parse_ack(status: u16, body: &[u8]) -> Result<(), RagError> {
 /// # Errors
 /// See [`status_error`], minus the already-exists case.
 pub fn parse_ensure_ack(status: u16, body: &[u8]) -> Result<(), RagError> {
+    // The auth mapping must run before the escape. 401/403 sit inside the
+    // 400..500 range the escape scans, so an auth failure whose body happens
+    // to mention the phrase (e.g. an error page echoing the request) would
+    // otherwise read as success instead of PermissionDenied.
+    if status == 401 || status == 403 {
+        return parse_ack(status, body);
+    }
     // Both halves of this condition are load-bearing. Gating on 4xx stops a 5xx
     // whose body merely mentions the phrase ("existence check timed out, the
     // collection may already exist") from being swallowed as success. Requiring
@@ -412,5 +419,13 @@ mod tests {
         assert!(parse_ensure_ack(503, b"retry: the collection already exists upstream").is_err());
         // A 409 that is not an already-exists conflict is still a failure.
         assert!(parse_ensure_ack(409, b"collection is locked for snapshot").is_err());
+    }
+
+    #[test]
+    fn a_401_is_permission_denied_even_if_the_body_mentions_already_exists() {
+        // 401 sits inside the 400..500 range the escape scans; the auth
+        // mapping must win, not the phrase match.
+        let err = parse_ensure_ack(401, b"... already exists ...").expect_err("must not succeed");
+        assert!(matches!(err, RagError::PermissionDenied(_)), "got {err:?}");
     }
 }
