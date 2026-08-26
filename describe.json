@@ -9,16 +9,29 @@
   },
   "metadata": {
     "id": "greentic.rag-qdrant",
-    "name": "component-rag-qdrant-ext",
+    "name": "RAG (Qdrant)",
     "version": "0.1.0",
-    "summary": "A Greentic Designer design extension.",
+    "summary": "Semantic search, ingestion and deletion over a Qdrant collection",
+    "description": "Design extension exposing five tools to both the agentic worker and flow nodes: rag_search, rag_upsert, rag_ingest, rag_delete and rag_collection_ensure. Text is embedded through a configurable OpenAI-shaped embeddings API; callers holding their own vectors can pass them directly. Ingestion chunks a document, deletes that doc_id's previous chunks, then upserts the new ones, so re-ingesting never duplicates or orphans content.",
     "author": {
       "name": "bimapangestu28"
     },
-    "license": "MIT"
+    "license": "MIT",
+    "keywords": [
+      "rag",
+      "qdrant",
+      "vector-search",
+      "knowledge-base",
+      "agentic-worker"
+    ]
   },
   "capabilities": {
-    "offered": [],
+    "offered": [
+      {
+        "id": "greentic:rag/qdrant",
+        "version": "1.0.0"
+      }
+    ],
     "required": []
   },
   "runtime": {
@@ -34,18 +47,149 @@
         "world": "greentic:rag-qdrant/extension@1.0.0"
       }
     },
+    "memoryLimitMB": 64,
     "permissions": {
-      "network": [],
-      "secrets": [],
+      "network": [
+        "https://YOUR-CLUSTER.qdrant.io:6333/*",
+        "https://api.openai.com/*"
+      ],
+      "secrets": [
+        "secret://rag-qdrant/qdrant_api_key",
+        "secret://rag-qdrant/embedding_api_key"
+      ],
       "callExtensionKinds": []
     }
   },
+  "requiredSecrets": [
+    {
+      "key": "rag-qdrant/qdrant_api_key",
+      "required": true,
+      "format": "text",
+      "description": "Qdrant API key, sent as the `api-key` header. Resolved by the host and never returned to the model."
+    },
+    {
+      "key": "rag-qdrant/embedding_api_key",
+      "required": true,
+      "format": "text",
+      "description": "Bearer token for the embeddings API configured in `embedding.base_url`."
+    }
+  ],
   "contributions": {
     "tools": [
       {
+        "capabilities": [
+          "flow",
+          "agentic_worker"
+        ],
+        "description": "Semantic search over the Qdrant knowledge base.",
         "export": "greentic:extension-design/tools.invoke-tool",
-        "name": "echo",
-        "runtime_ref": "rag-qdrant"
+        "input_schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"query\": { \"type\": \"string\", \"description\": \"Text to search for. Pass this OR vector, not both.\" },\n    \"vector\": { \"type\": \"array\", \"items\": { \"type\": \"number\" }, \"description\": \"A pre-computed embedding. Pass this OR query, not both.\" },\n    \"top_k\": { \"type\": \"integer\", \"minimum\": 1, \"description\": \"How many results to return (default 5).\" },\n    \"filter\": { \"type\": \"object\", \"description\": \"A Qdrant filter object, passed through verbatim.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection.\" }\n  },\n  \"oneOf\": [\n    { \"required\": [\"query\"],  \"not\": { \"required\": [\"vector\"] } },\n    { \"required\": [\"vector\"], \"not\": { \"required\": [\"query\"] } }\n  ]\n}",
+        "name": "rag_search",
+        "runtime_ref": "rag-qdrant",
+        "secret_requirements": [
+          {
+            "format": "text",
+            "key": "rag-qdrant/qdrant_api_key",
+            "required": true
+          },
+          {
+            "format": "text",
+            "key": "rag-qdrant/embedding_api_key",
+            "required": true
+          }
+        ]
+      },
+      {
+        "capabilities": [
+          "flow",
+          "agentic_worker"
+        ],
+        "description": "Store or replace a single point by id.",
+        "export": "greentic:extension-design/tools.invoke-tool",
+        "input_schema": "{\n  \"type\": \"object\",\n  \"required\": [\"id\"],\n  \"properties\": {\n    \"id\": { \"type\": \"string\", \"description\": \"Point id. Must be an unsigned integer or a UUID.\" },\n    \"text\": { \"type\": \"string\", \"description\": \"Text to embed and store. Pass this OR vector, not both.\" },\n    \"vector\": { \"type\": \"array\", \"items\": { \"type\": \"number\" }, \"description\": \"A pre-computed embedding. Pass this OR text, not both.\" },\n    \"payload\": { \"type\": \"object\", \"description\": \"Arbitrary metadata stored alongside the point.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection.\" }\n  },\n  \"oneOf\": [\n    { \"required\": [\"text\"],   \"not\": { \"required\": [\"vector\"] } },\n    { \"required\": [\"vector\"], \"not\": { \"required\": [\"text\"] } }\n  ]\n}",
+        "name": "rag_upsert",
+        "runtime_ref": "rag-qdrant",
+        "secret_requirements": [
+          {
+            "format": "text",
+            "key": "rag-qdrant/qdrant_api_key",
+            "required": true
+          },
+          {
+            "format": "text",
+            "key": "rag-qdrant/embedding_api_key",
+            "required": true
+          }
+        ]
+      },
+      {
+        "capabilities": [
+          "flow",
+          "agentic_worker"
+        ],
+        "description": "Chunk, embed and store a whole document under a doc_id.",
+        "export": "greentic:extension-design/tools.invoke-tool",
+        "input_schema": "{\n  \"type\": \"object\",\n  \"required\": [\"doc_id\", \"text\"],\n  \"properties\": {\n    \"doc_id\": { \"type\": \"string\", \"description\": \"Stable document identifier. Re-ingesting the same doc_id replaces its chunks.\" },\n    \"text\": { \"type\": \"string\", \"description\": \"Full document text. It is chunked, embedded and stored.\" },\n    \"metadata\": { \"type\": \"object\", \"description\": \"Metadata copied onto every chunk of this document.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection.\" }\n  }\n}",
+        "name": "rag_ingest",
+        "runtime_ref": "rag-qdrant",
+        "secret_requirements": [
+          {
+            "format": "text",
+            "key": "rag-qdrant/qdrant_api_key",
+            "required": true
+          },
+          {
+            "format": "text",
+            "key": "rag-qdrant/embedding_api_key",
+            "required": true
+          }
+        ]
+      },
+      {
+        "capabilities": [
+          "flow",
+          "agentic_worker"
+        ],
+        "description": "Delete points by id, or every chunk of one document.",
+        "export": "greentic:extension-design/tools.invoke-tool",
+        "input_schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"ids\": { \"type\": \"array\", \"items\": { \"type\": \"string\" }, \"description\": \"Point ids to delete. Pass this OR doc_id, not both.\" },\n    \"doc_id\": { \"type\": \"string\", \"description\": \"Delete every chunk of this document. Pass this OR ids, not both.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection.\" }\n  },\n  \"oneOf\": [\n    { \"required\": [\"ids\"],    \"not\": { \"required\": [\"doc_id\"] } },\n    { \"required\": [\"doc_id\"], \"not\": { \"required\": [\"ids\"] } }\n  ]\n}",
+        "name": "rag_delete",
+        "runtime_ref": "rag-qdrant",
+        "secret_requirements": [
+          {
+            "format": "text",
+            "key": "rag-qdrant/qdrant_api_key",
+            "required": true
+          },
+          {
+            "format": "text",
+            "key": "rag-qdrant/embedding_api_key",
+            "required": true
+          }
+        ]
+      },
+      {
+        "capabilities": [
+          "flow",
+          "agentic_worker"
+        ],
+        "description": "Create the collection if absent, with a fixed vector width and metric.",
+        "export": "greentic:extension-design/tools.invoke-tool",
+        "input_schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"collection\": { \"type\": \"string\", \"description\": \"Collection to create. Defaults to the configured one.\" },\n    \"dimensions\": { \"type\": \"integer\", \"minimum\": 1, \"description\": \"Vector width. Defaults to the configured embedding dimensions.\" },\n    \"distance\": { \"type\": \"string\", \"enum\": [\"Cosine\", \"Dot\", \"Euclid\"], \"description\": \"Distance metric (default Cosine).\" }\n  }\n}",
+        "name": "rag_collection_ensure",
+        "runtime_ref": "rag-qdrant",
+        "secret_requirements": [
+          {
+            "format": "text",
+            "key": "rag-qdrant/qdrant_api_key",
+            "required": true
+          },
+          {
+            "format": "text",
+            "key": "rag-qdrant/embedding_api_key",
+            "required": true
+          }
+        ]
       }
     ]
   }

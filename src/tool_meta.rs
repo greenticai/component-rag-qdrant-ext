@@ -302,4 +302,34 @@ mod tests {
             }
         }
     }
+
+    /// Not an assertion — a generator. Prints the `contributions.tools` block
+    /// for describe.json so the schemas are never hand-copied out of sync.
+    /// Run: `cargo test print_contributions -- --ignored --nocapture`
+    #[test]
+    #[ignore = "generator, not a check"]
+    fn print_contributions() {
+        let runtime_ref = std::env::var("RUNTIME_REF").unwrap_or_default();
+        let entries: Vec<serde_json::Value> = all_tools()
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "export": "greentic:extension-design/tools.invoke-tool",
+                    "runtime_ref": runtime_ref,
+                    "capabilities": t.capabilities,
+                    "description": t.description,
+                    "input_schema": t.input_schema_json,
+                    "secret_requirements": [
+                        {"key": "rag-qdrant/qdrant_api_key", "required": true, "format": "text"},
+                        {"key": "rag-qdrant/embedding_api_key", "required": true, "format": "text"}
+                    ]
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "tools": entries })).unwrap()
+        );
+    }
 }
