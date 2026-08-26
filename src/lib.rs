@@ -18,6 +18,8 @@
 #[allow(warnings)]
 mod bindings;
 
+pub mod chunk;
+
 use bindings::exports::greentic::extension_base::{lifecycle, manifest};
 use bindings::exports::greentic::extension_design::{knowledge, prompting, tools, validation};
 use bindings::greentic::extension_base::types;
