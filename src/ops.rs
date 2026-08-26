@@ -561,12 +561,10 @@ mod tests {
     #[test]
     fn nothing_is_requested_outside_the_declared_network_allowlist() {
         let host = happy_host(1);
-        // Mirrors the shape of what describe.json grants (a Qdrant host plus
-        // the embeddings host), not its literal value — describe.json names
-        // `YOUR-CLUSTER.qdrant.io`, a placeholder each deployment must edit;
-        // this test's `c.qdrant.io` is just the fixture's own base URL.
+        // These are exactly what describe.json grants: `*.qdrant.io` covers
+        // any Qdrant Cloud tenant, and `api.openai.com` is the embeddings host.
         host.http
-            .restrict_to_hosts(&["c.qdrant.io".to_string(), "api.openai.com".to_string()]);
+            .restrict_to_hosts(&["*.qdrant.io".to_string(), "api.openai.com".to_string()]);
         let input = crate::input::parse_ingest(r#"{"doc_id":"d1","text":"short"}"#).unwrap();
         ingest(&host, &cfg(), &input).unwrap();
         for call in host.http.calls() {

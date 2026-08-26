@@ -50,7 +50,7 @@
     "memoryLimitMB": 64,
     "permissions": {
       "network": [
-        "https://YOUR-CLUSTER.qdrant.io:6333/*",
+        "https://*.qdrant.io/*",
         "https://api.openai.com/*"
       ],
       "secrets": [

@@ -40,12 +40,16 @@ Passed to `lifecycle::init` as JSON:
 
 - **Qdrant 1.10 or newer.** Search uses the Query API (`/points/query`); the
   legacy `/points/search` path is not used.
-- **`runtime.permissions.network` in `describe.json` names a concrete Qdrant
-  host.** It must be edited for each cluster this extension is deployed
-  against — a per-tenant URL cannot be expressed as a wildcard grant. If
+- **`runtime.permissions.network` in `describe.json` grants `https://*.qdrant.io/*`.**
+  Qdrant **Cloud** works out of the box — that wildcard covers every tenant's
+  cluster host, no editing required. **Self-hosted** Qdrant is not covered:
+  its host must be added to the allowlist by hand. Likewise, if
   `embedding.base_url` is configured to anything other than
   `https://api.openai.com`, that host must be added to the same allowlist too,
   or the embeddings call is rejected before it ever reaches the network.
+  (The wildcard is verified against the SDK's host mock, which matches on
+  host only; if a runtime instead matches on the full URL including port, a
+  `:6333` variant of the pattern may be needed.)
 - **Ingestion takes text, not files.** The host exposes no filesystem, so PDF
   and DOCX must be converted to text before calling `rag_ingest`.
 - **Designer 1.2.0 or newer** (`compat.min_designer_version`). The published
