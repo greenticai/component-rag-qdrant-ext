@@ -25,6 +25,7 @@ pub mod input;
 pub mod host;
 pub mod embed;
 pub mod qdrant;
+pub mod ops;
 
 use bindings::exports::greentic::extension_base::{lifecycle, manifest};
 use bindings::exports::greentic::extension_design::{knowledge, prompting, tools, validation};
