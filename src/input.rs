@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 use serde_json::Value;
+use uuid::Uuid;
 
 use crate::error::RagError;
 
@@ -110,14 +111,28 @@ pub fn parse_search(json: &str) -> Result<SearchInput, RagError> {
     Ok(parsed)
 }
 
+/// Qdrant accepts only an unsigned integer or a UUID as a point id; anything
+/// else is a 400 from Qdrant, not a value we should spend an embeddings call
+/// and an ensure PUT on first.
+fn validate_point_id(id: &str) -> Result<(), RagError> {
+    if id.parse::<u64>().is_ok() || Uuid::parse_str(id).is_ok() {
+        return Ok(());
+    }
+    Err(RagError::InvalidInput(format!(
+        "rag_upsert: id {id:?} must be an unsigned integer or a UUID"
+    )))
+}
+
 /// # Errors
-/// [`RagError::InvalidInput`] on malformed JSON, an empty `id`, or a
-/// `text`/`vector` combination that is not exactly one.
+/// [`RagError::InvalidInput`] on malformed JSON, an `id` that is not an
+/// unsigned integer or a UUID, or a `text`/`vector` combination that is not
+/// exactly one.
 pub fn parse_upsert(json: &str) -> Result<UpsertInput, RagError> {
     let parsed: UpsertInput = decode("rag_upsert", json)?;
     if parsed.id.trim().is_empty() {
         return Err(RagError::InvalidInput("rag_upsert: id is empty".into()));
     }
+    validate_point_id(&parsed.id)?;
     let has_text = parsed.text.as_ref().is_some_and(|t| !t.trim().is_empty());
     let has_vector = parsed.vector.as_ref().is_some_and(|v| !v.is_empty());
     exactly_one("rag_upsert", has_text, has_vector)?;
@@ -217,15 +232,41 @@ mod tests {
 
     #[test]
     fn upsert_enforces_the_same_query_vector_rule() {
-        assert!(parse_upsert(r#"{"id":"a","text":"hi"}"#).is_ok());
-        assert!(parse_upsert(r#"{"id":"a","vector":[0.1]}"#).is_ok());
-        assert!(parse_upsert(r#"{"id":"a","text":"hi","vector":[0.1]}"#).is_err());
-        assert!(parse_upsert(r#"{"id":"a"}"#).is_err());
+        assert!(parse_upsert(r#"{"id":"1","text":"hi"}"#).is_ok());
+        assert!(parse_upsert(r#"{"id":"1","vector":[0.1]}"#).is_ok());
+        assert!(parse_upsert(r#"{"id":"1","text":"hi","vector":[0.1]}"#).is_err());
+        assert!(parse_upsert(r#"{"id":"1"}"#).is_err());
     }
 
     #[test]
     fn upsert_requires_a_non_empty_id() {
         assert!(parse_upsert(r#"{"id":"","text":"hi"}"#).is_err());
+    }
+
+    #[test]
+    fn upsert_accepts_a_numeric_id() {
+        assert!(parse_upsert(r#"{"id":"42","text":"hi"}"#).is_ok());
+    }
+
+    #[test]
+    fn upsert_accepts_a_canonical_uuid() {
+        let json = r#"{"id":"3f2504e0-4f89-41d3-9a0c-0305e82c3301","text":"hi"}"#;
+        assert!(parse_upsert(json).is_ok());
+    }
+
+    #[test]
+    fn upsert_rejects_an_id_that_is_neither_an_integer_nor_a_uuid() {
+        let err = parse_upsert(r#"{"id":"policy-2024","text":"hi"}"#).unwrap_err();
+        let RagError::InvalidInput(msg) = err else {
+            panic!("expected InvalidInput");
+        };
+        assert!(msg.contains("policy-2024"), "message was: {msg}");
+    }
+
+    #[test]
+    fn upsert_rejects_an_empty_id_before_the_id_shape_check() {
+        let err = parse_upsert(r#"{"id":"","text":"hi"}"#).unwrap_err();
+        assert!(matches!(err, RagError::InvalidInput(_)));
     }
 
     #[test]
