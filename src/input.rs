@@ -1,0 +1,255 @@
+//! Tool arguments: JSON in, validated typed values out. Pure.
+
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::error::RagError;
+
+fn default_top_k() -> u32 {
+    5
+}
+
+fn default_distance() -> String {
+    "Cosine".to_string()
+}
+
+fn empty_object() -> Value {
+    Value::Object(serde_json::Map::new())
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchInput {
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub vector: Option<Vec<f32>>,
+    #[serde(default = "default_top_k")]
+    pub top_k: u32,
+    #[serde(default)]
+    pub filter: Option<Value>,
+    #[serde(default)]
+    pub collection: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpsertInput {
+    pub id: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub vector: Option<Vec<f32>>,
+    #[serde(default = "empty_object")]
+    pub payload: Value,
+    #[serde(default)]
+    pub collection: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IngestInput {
+    pub doc_id: String,
+    pub text: String,
+    #[serde(default = "empty_object")]
+    pub metadata: Value,
+    #[serde(default)]
+    pub collection: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeleteInput {
+    #[serde(default)]
+    pub ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub doc_id: Option<String>,
+    #[serde(default)]
+    pub collection: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EnsureInput {
+    #[serde(default)]
+    pub collection: Option<String>,
+    #[serde(default)]
+    pub dimensions: Option<u32>,
+    #[serde(default = "default_distance")]
+    pub distance: String,
+}
+
+fn decode<T: for<'de> Deserialize<'de>>(tool: &str, json: &str) -> Result<T, RagError> {
+    serde_json::from_str(json)
+        .map_err(|e| RagError::InvalidInput(format!("decode {tool} input: {e}")))
+}
+
+/// Exactly one of a text field and a vector field must be present. Both means
+/// the caller has two conflicting intents and we would have to silently pick
+/// one; neither means there is nothing to search or store.
+fn exactly_one(tool: &str, has_text: bool, has_vector: bool) -> Result<(), RagError> {
+    match (has_text, has_vector) {
+        (true, false) | (false, true) => Ok(()),
+        (true, true) => Err(RagError::InvalidInput(format!(
+            "{tool}: pass either a text field or `vector`, not both"
+        ))),
+        (false, false) => Err(RagError::InvalidInput(format!(
+            "{tool}: pass either a text field or `vector`"
+        ))),
+    }
+}
+
+/// # Errors
+/// [`RagError::InvalidInput`] on malformed JSON, a `top_k` of zero, or a
+/// `query`/`vector` combination that is not exactly one.
+pub fn parse_search(json: &str) -> Result<SearchInput, RagError> {
+    let parsed: SearchInput = decode("rag_search", json)?;
+    let has_query = parsed.query.as_ref().is_some_and(|q| !q.trim().is_empty());
+    let has_vector = parsed.vector.as_ref().is_some_and(|v| !v.is_empty());
+    exactly_one("rag_search", has_query, has_vector)?;
+    if parsed.top_k == 0 {
+        return Err(RagError::InvalidInput(
+            "rag_search: top_k must be greater than zero".into(),
+        ));
+    }
+    Ok(parsed)
+}
+
+/// # Errors
+/// [`RagError::InvalidInput`] on malformed JSON, an empty `id`, or a
+/// `text`/`vector` combination that is not exactly one.
+pub fn parse_upsert(json: &str) -> Result<UpsertInput, RagError> {
+    let parsed: UpsertInput = decode("rag_upsert", json)?;
+    if parsed.id.trim().is_empty() {
+        return Err(RagError::InvalidInput("rag_upsert: id is empty".into()));
+    }
+    let has_text = parsed.text.as_ref().is_some_and(|t| !t.trim().is_empty());
+    let has_vector = parsed.vector.as_ref().is_some_and(|v| !v.is_empty());
+    exactly_one("rag_upsert", has_text, has_vector)?;
+    Ok(parsed)
+}
+
+/// # Errors
+/// [`RagError::InvalidInput`] on malformed JSON, an empty `doc_id`, or text
+/// that is empty or whitespace-only.
+pub fn parse_ingest(json: &str) -> Result<IngestInput, RagError> {
+    let parsed: IngestInput = decode("rag_ingest", json)?;
+    if parsed.doc_id.trim().is_empty() {
+        return Err(RagError::InvalidInput("rag_ingest: doc_id is empty".into()));
+    }
+    if parsed.text.trim().is_empty() {
+        return Err(RagError::InvalidInput("rag_ingest: text is empty".into()));
+    }
+    Ok(parsed)
+}
+
+/// # Errors
+/// [`RagError::InvalidInput`] unless exactly one of `ids` (non-empty) and
+/// `doc_id` is given. Accepting neither would delete everything.
+pub fn parse_delete(json: &str) -> Result<DeleteInput, RagError> {
+    let parsed: DeleteInput = decode("rag_delete", json)?;
+    let has_ids = parsed.ids.as_ref().is_some_and(|i| !i.is_empty());
+    let has_doc = parsed.doc_id.as_ref().is_some_and(|d| !d.trim().is_empty());
+    match (has_ids, has_doc) {
+        (true, false) | (false, true) => Ok(parsed),
+        (true, true) => Err(RagError::InvalidInput(
+            "rag_delete: pass either `ids` or `doc_id`, not both".into(),
+        )),
+        (false, false) => Err(RagError::InvalidInput(
+            "rag_delete: pass either `ids` or `doc_id`".into(),
+        )),
+    }
+}
+
+/// # Errors
+/// [`RagError::InvalidInput`] on malformed JSON or a distance metric Qdrant
+/// does not implement.
+pub fn parse_ensure(json: &str) -> Result<EnsureInput, RagError> {
+    let parsed: EnsureInput = decode("rag_collection_ensure", json)?;
+    // Qdrant also implements "Manhattan", left out here because it is a poor
+    // fit for normalised embeddings and degrades recall silently rather than
+    // failing. Adding it later is a one-line change.
+    const ALLOWED: [&str; 3] = ["Cosine", "Dot", "Euclid"];
+    if !ALLOWED.contains(&parsed.distance.as_str()) {
+        return Err(RagError::InvalidInput(format!(
+            "rag_collection_ensure: distance must be one of {ALLOWED:?}, got {:?}",
+            parsed.distance
+        )));
+    }
+    Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn search_accepts_a_text_query() {
+        let got = parse_search(r#"{"query":"kemayoran units","top_k":3}"#).unwrap();
+        assert_eq!(got.query.as_deref(), Some("kemayoran units"));
+        assert_eq!(got.top_k, 3);
+        assert!(got.vector.is_none());
+    }
+
+    #[test]
+    fn search_accepts_a_raw_vector() {
+        let got = parse_search(r#"{"vector":[0.1,0.2,0.3]}"#).unwrap();
+        assert_eq!(got.vector.as_deref(), Some([0.1f32, 0.2, 0.3].as_slice()));
+        assert!(got.query.is_none());
+    }
+
+    #[test]
+    fn search_top_k_defaults_to_five() {
+        assert_eq!(parse_search(r#"{"query":"x"}"#).unwrap().top_k, 5);
+    }
+
+    #[test]
+    fn search_rejects_both_query_and_vector() {
+        let err = parse_search(r#"{"query":"x","vector":[0.1]}"#).unwrap_err();
+        assert!(matches!(err, RagError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn search_rejects_neither_query_nor_vector() {
+        let err = parse_search(r#"{"top_k":3}"#).unwrap_err();
+        assert!(matches!(err, RagError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn search_rejects_a_zero_top_k() {
+        assert!(parse_search(r#"{"query":"x","top_k":0}"#).is_err());
+    }
+
+    #[test]
+    fn upsert_enforces_the_same_query_vector_rule() {
+        assert!(parse_upsert(r#"{"id":"a","text":"hi"}"#).is_ok());
+        assert!(parse_upsert(r#"{"id":"a","vector":[0.1]}"#).is_ok());
+        assert!(parse_upsert(r#"{"id":"a","text":"hi","vector":[0.1]}"#).is_err());
+        assert!(parse_upsert(r#"{"id":"a"}"#).is_err());
+    }
+
+    #[test]
+    fn upsert_requires_a_non_empty_id() {
+        assert!(parse_upsert(r#"{"id":"","text":"hi"}"#).is_err());
+    }
+
+    #[test]
+    fn ingest_requires_a_doc_id_and_text() {
+        let got = parse_ingest(r#"{"doc_id":"d1","text":"body"}"#).unwrap();
+        assert_eq!(got.doc_id, "d1");
+        assert_eq!(got.metadata, serde_json::json!({}));
+        assert!(parse_ingest(r#"{"text":"body"}"#).is_err());
+        assert!(parse_ingest(r#"{"doc_id":"d1","text":"   "}"#).is_err());
+    }
+
+    #[test]
+    fn delete_requires_exactly_one_selector() {
+        assert!(parse_delete(r#"{"ids":["a"]}"#).is_ok());
+        assert!(parse_delete(r#"{"doc_id":"d1"}"#).is_ok());
+        assert!(parse_delete(r#"{"ids":["a"],"doc_id":"d1"}"#).is_err());
+        assert!(parse_delete(r#"{}"#).is_err());
+        assert!(parse_delete(r#"{"ids":[]}"#).is_err());
+    }
+
+    #[test]
+    fn ensure_defaults_distance_to_cosine_and_rejects_unknown_metrics() {
+        assert_eq!(parse_ensure(r#"{}"#).unwrap().distance, "Cosine");
+        assert_eq!(parse_ensure(r#"{"distance":"Dot"}"#).unwrap().distance, "Dot");
+        assert!(parse_ensure(r#"{"distance":"Manhattan"}"#).is_err());
+    }
+}
