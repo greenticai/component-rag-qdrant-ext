@@ -139,6 +139,14 @@ pub fn upsert<H: HostCalls>(
     cfg: &Config,
     input: &UpsertInput,
 ) -> Result<Value, RagError> {
+    // Same reasoning as `ingest`: a non-object payload silently swallows the
+    // `text` insert instead of failing. Reject it before any host call.
+    if !input.payload.is_object() {
+        return Err(RagError::InvalidInput(
+            "rag_upsert: payload must be a JSON object".into(),
+        ));
+    }
+
     let vector = match (&input.vector, &input.text) {
         (Some(v), _) => {
             check_width(cfg, v)?;
@@ -194,6 +202,17 @@ pub fn ingest<H: HostCalls>(
     cfg: &Config,
     input: &IngestInput,
 ) -> Result<Value, RagError> {
+    // A non-object metadata value would make `as_object_mut()` below return
+    // `None`, silently dropping the `doc_id` insert. The point would still be
+    // written — but with no `doc_id`, so `delete_request`'s filter could never
+    // find it again. That is the orphan chunk this whole function is ordered to
+    // prevent, arriving through a different door. Reject it before any host call.
+    if !input.metadata.is_object() {
+        return Err(RagError::InvalidInput(
+            "rag_ingest: metadata must be a JSON object".into(),
+        ));
+    }
+
     let chunks = chunk_text(&input.text, cfg.chunk.max_chars, cfg.chunk.overlap_chars);
     if chunks.is_empty() {
         return Err(RagError::InvalidInput(
@@ -501,6 +520,30 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_slice(upsert.body.as_deref().unwrap()).unwrap();
         assert_eq!(body["points"][0]["payload"]["lang"], "id");
+    }
+
+    /// A non-object metadata value must not reach Qdrant. If it did, the
+    /// doc_id insert would be skipped and the chunk would be undeletable.
+    #[test]
+    fn ingest_rejects_non_object_metadata_before_any_call() {
+        let host = happy_host(1);
+        let input = crate::input::parse_ingest(
+            r#"{"doc_id":"d1","text":"short","metadata":null}"#,
+        )
+        .unwrap();
+        let err = ingest(&host, &cfg(), &input).unwrap_err();
+        assert!(matches!(err, RagError::InvalidInput(_)), "got {err:?}");
+        assert!(host.http.calls().is_empty(), "must not reach the network");
+    }
+
+    #[test]
+    fn upsert_rejects_non_object_payload_before_any_call() {
+        let host = happy_host(1);
+        let input =
+            crate::input::parse_upsert(r#"{"id":"a","text":"hi","payload":[1,2]}"#).unwrap();
+        let err = upsert(&host, &cfg(), &input).unwrap_err();
+        assert!(matches!(err, RagError::InvalidInput(_)), "got {err:?}");
+        assert!(host.http.calls().is_empty(), "must not reach the network");
     }
 
     #[test]
