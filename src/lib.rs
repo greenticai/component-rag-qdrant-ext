@@ -19,6 +19,8 @@
 mod bindings;
 
 pub mod chunk;
+pub mod error;
+pub mod config;
 
 use bindings::exports::greentic::extension_base::{lifecycle, manifest};
 use bindings::exports::greentic::extension_design::{knowledge, prompting, tools, validation};
