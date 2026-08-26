@@ -22,6 +22,8 @@ pub mod chunk;
 pub mod error;
 pub mod config;
 pub mod input;
+pub mod host;
+pub mod embed;
 
 use bindings::exports::greentic::extension_base::{lifecycle, manifest};
 use bindings::exports::greentic::extension_design::{knowledge, prompting, tools, validation};
