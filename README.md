@@ -42,7 +42,10 @@ Passed to `lifecycle::init` as JSON:
   legacy `/points/search` path is not used.
 - **`runtime.permissions.network` in `describe.json` names a concrete Qdrant
   host.** It must be edited for each cluster this extension is deployed
-  against — a per-tenant URL cannot be expressed as a wildcard grant.
+  against — a per-tenant URL cannot be expressed as a wildcard grant. If
+  `embedding.base_url` is configured to anything other than
+  `https://api.openai.com`, that host must be added to the same allowlist too,
+  or the embeddings call is rejected before it ever reaches the network.
 - **Ingestion takes text, not files.** The host exposes no filesystem, so PDF
   and DOCX must be converted to text before calling `rag_ingest`.
 - **Designer 1.2.0 or newer** (`compat.min_designer_version`). The published
