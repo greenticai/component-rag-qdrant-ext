@@ -39,11 +39,11 @@
       "rag-qdrant": {
         "gtpack": {
           "file": "extension.wasm",
-          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "sha256": "f7966bc80caa84845c8528a2b2bc7f13830ce5f4c5118c69b8e56904565ed2c7",
           "pack_id": "greentic.rag-qdrant",
           "component_version": "0.1.0"
         },
-        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "sha256": "f7966bc80caa84845c8528a2b2bc7f13830ce5f4c5118c69b8e56904565ed2c7",
         "world": "greentic:rag-qdrant/extension@1.0.0"
       }
     },
