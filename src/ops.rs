@@ -25,9 +25,8 @@ fn send<H: HostCalls>(host: &H, req: &HttpRequest) -> Result<HttpResponse, RagEr
 }
 
 fn secret<H: HostCalls>(host: &H, uri: &str) -> Result<String, RagError> {
-    host.secret(uri).map_err(|e| {
-        RagError::PermissionDenied(format!("host could not resolve {uri}: {e}"))
-    })
+    host.secret(uri)
+        .map_err(|e| RagError::PermissionDenied(format!("host could not resolve {uri}: {e}")))
 }
 
 fn collection_of<'a>(cfg: &'a Config, override_: Option<&'a String>) -> &'a str {
@@ -403,7 +402,11 @@ mod tests {
         secrets.set(EMBEDDING_KEY_REF, "ek");
 
         http.expect("POST", EMBED_URL, embed_ok(embeddings));
-        http.expect("PUT", &format!("{BASE}/collections/kb"), ok(r#"{"result":true}"#));
+        http.expect(
+            "PUT",
+            &format!("{BASE}/collections/kb"),
+            ok(r#"{"result":true}"#),
+        );
         http.expect(
             "PUT",
             &format!("{BASE}/collections/kb/points?wait=true"),
@@ -459,10 +462,9 @@ mod tests {
     fn ingest_deletes_the_document_before_upserting_its_chunks() {
         // 25 chars with a 10/2 window → 3 chunks, so three vectors come back.
         let host = happy_host(3);
-        let input = crate::input::parse_ingest(
-            r#"{"doc_id":"d1","text":"abcdefghijklmnopqrstuvwxy"}"#,
-        )
-        .unwrap();
+        let input =
+            crate::input::parse_ingest(r#"{"doc_id":"d1","text":"abcdefghijklmnopqrstuvwxy"}"#)
+                .unwrap();
         let out = ingest(&host, &cfg(), &input).unwrap();
 
         let urls: Vec<String> = host.http.calls().into_iter().map(|c| c.url).collect();
@@ -484,8 +486,7 @@ mod tests {
     #[test]
     fn ingest_writes_deterministic_uuid_ids_carrying_doc_id_and_index() {
         let host = happy_host(1);
-        let input =
-            crate::input::parse_ingest(r#"{"doc_id":"d1","text":"short"}"#).unwrap();
+        let input = crate::input::parse_ingest(r#"{"doc_id":"d1","text":"short"}"#).unwrap();
         ingest(&host, &cfg(), &input).unwrap();
 
         let upsert = host
@@ -496,7 +497,10 @@ mod tests {
             .expect("no upsert call");
         let body: serde_json::Value =
             serde_json::from_slice(upsert.body.as_deref().unwrap()).unwrap();
-        assert_eq!(body["points"][0]["id"], crate::qdrant::chunk_point_id("d1", 0));
+        assert_eq!(
+            body["points"][0]["id"],
+            crate::qdrant::chunk_point_id("d1", 0)
+        );
         assert_eq!(body["points"][0]["payload"]["doc_id"], "d1");
         assert_eq!(body["points"][0]["payload"]["chunk_index"], 0);
         assert_eq!(body["points"][0]["payload"]["text"], "short");
@@ -527,10 +531,8 @@ mod tests {
     #[test]
     fn ingest_rejects_non_object_metadata_before_any_call() {
         let host = happy_host(1);
-        let input = crate::input::parse_ingest(
-            r#"{"doc_id":"d1","text":"short","metadata":null}"#,
-        )
-        .unwrap();
+        let input = crate::input::parse_ingest(r#"{"doc_id":"d1","text":"short","metadata":null}"#)
+            .unwrap();
         let err = ingest(&host, &cfg(), &input).unwrap_err();
         assert!(matches!(err, RagError::InvalidInput(_)), "got {err:?}");
         assert!(host.http.calls().is_empty(), "must not reach the network");
@@ -592,8 +594,7 @@ mod tests {
             ok(r#"{"result":{"points":[]}}"#),
         );
         let input =
-            crate::input::parse_search(r#"{"vector":[0.1,0.2,0.3],"collection":"other"}"#)
-                .unwrap();
+            crate::input::parse_search(r#"{"vector":[0.1,0.2,0.3],"collection":"other"}"#).unwrap();
         search(&host, &cfg(), &input).unwrap();
         assert!(host.http.calls()[0].url.contains("/collections/other/"));
     }

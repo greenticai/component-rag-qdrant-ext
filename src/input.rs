@@ -249,7 +249,10 @@ mod tests {
     #[test]
     fn ensure_defaults_distance_to_cosine_and_rejects_unknown_metrics() {
         assert_eq!(parse_ensure(r#"{}"#).unwrap().distance, "Cosine");
-        assert_eq!(parse_ensure(r#"{"distance":"Dot"}"#).unwrap().distance, "Dot");
+        assert_eq!(
+            parse_ensure(r#"{"distance":"Dot"}"#).unwrap().distance,
+            "Dot"
+        );
         assert!(parse_ensure(r#"{"distance":"Manhattan"}"#).is_err());
     }
 }

@@ -229,11 +229,8 @@ mod tests {
     /// host at all.
     #[test]
     fn an_unknown_tool_is_rejected_before_any_host_call() {
-        let err = <Component as tools::Guest>::invoke_tool(
-            "nope".to_string(),
-            "{}".to_string(),
-        )
-        .unwrap_err();
+        let err = <Component as tools::Guest>::invoke_tool("nope".to_string(), "{}".to_string())
+            .unwrap_err();
         assert!(matches!(err, types::ExtensionError::InvalidInput(_)));
     }
 

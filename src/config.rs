@@ -59,8 +59,8 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 /// [`RagError::InvalidInput`] naming the offending field. Never panics — a bad
 /// config must surface as a failed call, not a trapped component.
 pub fn parse_config(json: &str) -> Result<Config, RagError> {
-    let mut cfg: Config = serde_json::from_str(json)
-        .map_err(|e| RagError::InvalidInput(format!("config: {e}")))?;
+    let mut cfg: Config =
+        serde_json::from_str(json).map_err(|e| RagError::InvalidInput(format!("config: {e}")))?;
 
     // Every URL is joined with a leading-slash path, so a trailing slash here
     // would produce `//collections/...` — accepted by some proxies, 404 by others.

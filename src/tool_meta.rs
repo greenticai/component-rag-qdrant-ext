@@ -239,9 +239,8 @@ mod tests {
     #[test]
     fn every_tool_declares_side_effects_and_a_confirmation_stance() {
         for tool in all_tools() {
-            let meta: serde_json::Value =
-                serde_json::from_str(tool.agentic_worker_metadata)
-                    .unwrap_or_else(|e| panic!("{} metadata: {e}", tool.name));
+            let meta: serde_json::Value = serde_json::from_str(tool.agentic_worker_metadata)
+                .unwrap_or_else(|e| panic!("{} metadata: {e}", tool.name));
             assert!(
                 meta.get("side_effects").is_some(),
                 "{} has no side_effects",
@@ -252,7 +251,11 @@ mod tests {
                 "{} has no confirmation_required",
                 tool.name
             );
-            assert!(meta.get("usage_hint").is_some(), "{} has no usage_hint", tool.name);
+            assert!(
+                meta.get("usage_hint").is_some(),
+                "{} has no usage_hint",
+                tool.name
+            );
         }
     }
 
@@ -271,8 +274,7 @@ mod tests {
                 .into_iter()
                 .find(|t| t.name == name)
                 .unwrap_or_else(|| panic!("{name} missing"));
-            let schema: serde_json::Value =
-                serde_json::from_str(tool.input_schema_json).unwrap();
+            let schema: serde_json::Value = serde_json::from_str(tool.input_schema_json).unwrap();
             let branches = schema["oneOf"]
                 .as_array()
                 .unwrap_or_else(|| panic!("{name} has no oneOf"))

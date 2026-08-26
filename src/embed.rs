@@ -94,21 +94,20 @@ mod tests {
         let req = embed_request(&cfg(), &["hello".to_string()], "sk-test");
         assert_eq!(req.method, "POST");
         assert_eq!(req.url, "https://api.openai.com/v1/embeddings");
-        assert!(req.headers.contains(&(
-            "authorization".to_string(),
-            "Bearer sk-test".to_string()
-        )));
-        assert!(req.headers.contains(&(
-            "content-type".to_string(),
-            "application/json".to_string()
-        )));
+        assert!(
+            req.headers
+                .contains(&("authorization".to_string(), "Bearer sk-test".to_string()))
+        );
+        assert!(
+            req.headers
+                .contains(&("content-type".to_string(), "application/json".to_string()))
+        );
     }
 
     #[test]
     fn the_request_body_carries_the_model_and_every_input() {
         let req = embed_request(&cfg(), &["a".to_string(), "b".to_string()], "k");
-        let body: serde_json::Value =
-            serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
+        let body: serde_json::Value = serde_json::from_slice(req.body.as_deref().unwrap()).unwrap();
         assert_eq!(body["model"], "text-embedding-3-small");
         assert_eq!(body["input"], serde_json::json!(["a", "b"]));
     }

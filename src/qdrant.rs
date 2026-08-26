@@ -38,7 +38,11 @@ pub enum DeleteSelector {
 /// Determinism is what makes re-ingestion an overwrite instead of a duplicate.
 #[must_use]
 pub fn chunk_point_id(doc_id: &str, chunk_index: usize) -> String {
-    Uuid::new_v5(&CHUNK_NAMESPACE, format!("{doc_id}:{chunk_index}").as_bytes()).to_string()
+    Uuid::new_v5(
+        &CHUNK_NAMESPACE,
+        format!("{doc_id}:{chunk_index}").as_bytes(),
+    )
+    .to_string()
 }
 
 fn request(method: &str, url: String, api_key: &str, body: &Value) -> HttpRequest {
@@ -62,13 +66,23 @@ pub fn ensure_collection_request(
     api_key: &str,
 ) -> HttpRequest {
     let body = serde_json::json!({ "vectors": { "size": dimensions, "distance": distance } });
-    request("PUT", format!("{base}/collections/{collection}"), api_key, &body)
+    request(
+        "PUT",
+        format!("{base}/collections/{collection}"),
+        api_key,
+        &body,
+    )
 }
 
 /// `wait=true` because a search issued immediately after an ingest would
 /// otherwise race the index and return nothing.
 #[must_use]
-pub fn upsert_request(base: &str, collection: &str, points: &[Point], api_key: &str) -> HttpRequest {
+pub fn upsert_request(
+    base: &str,
+    collection: &str,
+    points: &[Point],
+    api_key: &str,
+) -> HttpRequest {
     let points: Vec<Value> = points
         .iter()
         .map(|p| serde_json::json!({ "id": p.id, "vector": p.vector, "payload": p.payload }))
@@ -232,7 +246,8 @@ mod tests {
         ];
         for req in &reqs {
             assert!(
-                req.headers.contains(&("api-key".to_string(), "k".to_string())),
+                req.headers
+                    .contains(&("api-key".to_string(), "k".to_string())),
                 "missing api-key on {}",
                 req.url
             );
@@ -266,7 +281,10 @@ mod tests {
             "https://c.qdrant.io:6333/collections/kb/points?wait=true"
         );
         let body = body_of(&req);
-        assert_eq!(body["points"][0]["id"], "3f2504e0-4f89-41d3-9a0c-0305e82c3301");
+        assert_eq!(
+            body["points"][0]["id"],
+            "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        );
         assert_eq!(body["points"][0]["payload"]["doc_id"], "d1");
     }
 
@@ -283,7 +301,10 @@ mod tests {
         assert_eq!(body["limit"], 7);
         assert_eq!(body["with_payload"], true);
         // f32 precision: convert expected values to f32 and back to match serialized form
-        assert_eq!(body["query"], serde_json::json!([0.1f32 as f64, 0.2f32 as f64]));
+        assert_eq!(
+            body["query"],
+            serde_json::json!([0.1f32 as f64, 0.2f32 as f64])
+        );
         assert!(body.get("filter").is_none());
     }
 
@@ -378,8 +399,11 @@ mod tests {
         // case, not an error.
         assert!(parse_ensure_ack(409, b"Collection `kb` already exists!").is_ok());
         assert!(
-            parse_ensure_ack(400, br#"{"status":{"error":"Collection `kb` already exists!"}}"#)
-                .is_ok()
+            parse_ensure_ack(
+                400,
+                br#"{"status":{"error":"Collection `kb` already exists!"}}"#
+            )
+            .is_ok()
         );
         assert!(parse_ensure_ack(400, br#"{"status":{"error":"bad dim"}}"#).is_err());
         // The body deliberately DOES contain the phrase, so the substring check
