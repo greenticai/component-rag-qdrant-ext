@@ -1,153 +1,160 @@
-// Design extension guest for greentic.rag-qdrant.
-//
-// This scaffold ships one working tool — `echo` — so a fresh build does
-// something you can see: install it, and the designer lists `echo` and can
-// invoke it. Replace it with your own tool rather than starting from a blank
-// file.
-//
-// Every export below is required by the extension-design contract. The ones
-// you do not need can stay as they are: returning an empty list is a valid
-// answer meaning "this extension contributes nothing here".
-//
-// Two things to keep in step as you edit:
-//   * `contributions` in describe.json is what the designer *lists*. A tool
-//     implemented here but missing there is never offered to users.
-//   * `gtdx lint --dir .` checks that pairing, plus tool naming and export
-//     form. Run it before you publish.
+//! Greentic RAG/Qdrant design extension — WIT export layer.
+//!
+//! Exports five tools (`rag_search`, `rag_upsert`, `rag_ingest`, `rag_delete`,
+//! `rag_collection_ensure`) via `greentic:extension-design/tools`. Every piece of
+//! logic lives in the pure modules below; this file is the only one that may
+//! touch `bindings`, because a host `cargo test` that reaches a WIT import
+//! aborts the process outright.
+#![allow(clippy::used_underscore_items)]
 
 #[allow(warnings)]
-mod bindings;
+pub mod bindings;
 
 pub mod chunk;
-pub mod error;
 pub mod config;
-pub mod input;
-pub mod host;
 pub mod embed;
-pub mod qdrant;
+pub mod error;
+pub mod host;
+pub mod input;
 pub mod ops;
+pub mod qdrant;
 pub mod tool_meta;
 
 use bindings::exports::greentic::extension_base::{lifecycle, manifest};
 use bindings::exports::greentic::extension_design::{knowledge, prompting, tools, validation};
 use bindings::greentic::extension_base::types;
 
-struct Component;
+use error::RagError;
+use host::{HostCalls, HttpRequest, HttpResponse};
 
-// ---- extension-base/manifest ----
-// Identity and capability wiring. The designer reads this to know who the
-// component claims to be; it must agree with `metadata` in describe.json.
+pub struct Component;
+
+/// The one and only WIT-backed `HostCalls`. Everything else takes the trait.
+pub struct WitHost;
+
+impl HostCalls for WitHost {
+    fn fetch(&self, req: &HttpRequest) -> Result<HttpResponse, String> {
+        let headers: Vec<(String, String)> = req.headers.clone();
+        let wire = bindings::greentic::extension_host::http::Request {
+            method: req.method.clone(),
+            url: req.url.clone(),
+            headers,
+            body: req.body.clone(),
+        };
+        let resp = bindings::greentic::extension_host::http::fetch(&wire)?;
+        Ok(HttpResponse {
+            status: resp.status,
+            body: resp.body,
+        })
+    }
+
+    fn secret(&self, uri: &str) -> Result<String, String> {
+        bindings::greentic::extension_host::secrets::get(uri)
+    }
+}
+
+/// Map the extension's error taxonomy onto the WIT one. Kept as a free function
+/// (not `From`) so it is callable from the host tests below.
+#[must_use]
+pub fn map_error(err: RagError) -> types::ExtensionError {
+    match err {
+        RagError::InvalidInput(m) => types::ExtensionError::InvalidInput(m),
+        RagError::PermissionDenied(m) => types::ExtensionError::PermissionDenied(m),
+        RagError::NotFound(m) => types::ExtensionError::NotFound(m),
+        RagError::SchemaInvalid(m) => types::ExtensionError::SchemaInvalid(m),
+        RagError::Internal(m) => types::ExtensionError::Internal(m),
+    }
+}
+
+// ===== base::manifest =====
 impl manifest::Guest for Component {
     fn get_identity() -> types::ExtensionIdentity {
         types::ExtensionIdentity {
             id: "greentic.rag-qdrant".to_string(),
-            version: "0.1.0".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             kind: types::Kind::Design,
         }
     }
 
-    /// Capabilities other extensions may depend on, as `namespace:name`.
-    /// Anything listed here must also appear in `capabilities.offered` in
-    /// describe.json.
     fn get_offered() -> Vec<types::CapabilityRef> {
-        Vec::new()
+        vec![types::CapabilityRef {
+            id: "greentic:rag/qdrant".to_string(),
+            version: "1.0.0".to_string(),
+        }]
     }
 
-    /// Capabilities this extension needs from others. The designer refuses to
-    /// enable an extension whose required capabilities are unmet, so add an
-    /// entry only when the extension genuinely cannot work without it.
     fn get_required() -> Vec<types::CapabilityRef> {
         Vec::new()
     }
 }
 
-// ---- extension-base/lifecycle ----
-// Called once when the designer loads the component, and once at unload.
+// ===== base::lifecycle =====
 impl lifecycle::Guest for Component {
-    /// `config_json` is the extension's settings object, serialised. Returning
-    /// `Err` here stops the extension loading at all — reserve it for
-    /// configuration that is genuinely unusable, not for missing optional
-    /// values.
-    fn init(_config_json: String) -> Result<(), types::ExtensionError> {
-        Ok(())
+    fn init(config_json: String) -> Result<(), types::ExtensionError> {
+        let cfg = config::parse_config(&config_json).map_err(map_error)?;
+        config::store(cfg).map_err(map_error)
     }
 
     fn shutdown() {
-        // Release anything `init` acquired. A WASM component is torn down
-        // wholesale, so this is only needed for work with side effects
-        // outside the component (flushing a buffer, closing a session).
+        // Stateless: no client, no connection pool, nothing to drain.
     }
 }
 
-// ---- extension-design/tools ----
-// Tools are the verbs this extension adds. The designer lists them, an agentic
-// worker may call them, and each call arrives here as `invoke_tool`.
+// ===== design::tools =====
 impl tools::Guest for Component {
-    /// Describe every tool this extension implements.
-    ///
-    /// `input_schema_json` is a JSON Schema object. The designer renders it as
-    /// the tool's form and validates arguments against it before calling, so a
-    /// precise schema here means fewer bad inputs to handle below.
     fn list_tools() -> Vec<tools::ToolDefinition> {
-        vec![tools::ToolDefinition {
-            // snake_case, and unique within this extension. `gtdx lint`
-            // rejects camelCase and near-duplicate names.
-            name: "echo".to_string(),
-            // Shown in the designer's tool list. Write it for the person
-            // choosing between tools, not for the implementer.
-            description: "Return the message that was passed in.".to_string(),
-            input_schema_json: r#"{
-                "type": "object",
-                "properties": {
-                    "message": { "type": "string", "title": "Message" }
-                },
-                "required": ["message"]
-            }"#
-            .to_string(),
-            // Optional. Declare it when callers benefit from knowing the
-            // result shape ahead of time; `none` means "unspecified".
-            output_schema_json: Some(
-                r#"{"type":"object","properties":{"echoed":{"type":"string"}}}"#.to_string(),
-            ),
-            // Where the tool may be used. `flow` = as a flow node,
-            // `agentic_worker` = callable by an agent. `None` means the
-            // consumer defaults to `["flow"]`.
-            capabilities: Some(vec!["flow".to_string(), "agentic_worker".to_string()]),
-            agentic_worker_metadata: None,
-        }]
+        tool_meta::all_tools()
+            .into_iter()
+            .map(|meta| tools::ToolDefinition {
+                name: meta.name.to_string(),
+                description: meta.description.to_string(),
+                input_schema_json: meta.input_schema_json.to_string(),
+                output_schema_json: Some(meta.output_schema_json.to_string()),
+                capabilities: Some(meta.capabilities),
+                agentic_worker_metadata: Some(meta.agentic_worker_metadata.to_string()),
+            })
+            .collect()
     }
 
-    /// Run one tool. `args_json` is the caller's arguments, already validated
-    /// against the schema above; the return value is the JSON-encoded result.
-    ///
-    /// Match on `name` and fall through to an error — an unknown name is a
-    /// caller mistake worth reporting, not something to answer with an empty
-    /// success.
     fn invoke_tool(name: String, args_json: String) -> Result<String, types::ExtensionError> {
-        match name.as_str() {
-            // Deliberately dependency-free: the scaffold ships no JSON
-            // library, so this hands the arguments straight back. Real tools
-            // will want to parse `args_json` — add `serde_json` to Cargo.toml
-            // and deserialise into a struct.
-            // Built by concatenation rather than `format!`: a Rust format
-            // string would have to escape its braces by doubling them, and
-            // doubled braces are the scaffold renderer's own placeholder
-            // syntax — the file would never render.
-            "echo" => Ok(["{\"echoed\":", &args_json, "}"].concat()),
-            _ => Err(types::ExtensionError::InvalidInput(format!(
-                "unknown tool: {name}"
-            ))),
-        }
+        dispatch(&name, &args_json).map_err(map_error)
     }
 }
 
-// ---- extension-design/validation ----
-// Domain checks the designer runs against user content, so mistakes surface
-// while editing rather than at deploy time.
+/// Parse arguments, then run the operation. Argument parsing happens before the
+/// config lookup so a malformed call fails the same way whether or not `init`
+/// has run.
+fn dispatch(name: &str, args_json: &str) -> Result<String, RagError> {
+    let host = WitHost;
+    let value = match name {
+        tool_meta::SEARCH_TOOL => {
+            let input = input::parse_search(args_json)?;
+            ops::search(&host, config::current()?, &input)?
+        }
+        tool_meta::UPSERT_TOOL => {
+            let input = input::parse_upsert(args_json)?;
+            ops::upsert(&host, config::current()?, &input)?
+        }
+        tool_meta::INGEST_TOOL => {
+            let input = input::parse_ingest(args_json)?;
+            ops::ingest(&host, config::current()?, &input)?
+        }
+        tool_meta::DELETE_TOOL => {
+            let input = input::parse_delete(args_json)?;
+            ops::delete(&host, config::current()?, &input)?
+        }
+        tool_meta::ENSURE_TOOL => {
+            let input = input::parse_ensure(args_json)?;
+            ops::ensure_collection(&host, config::current()?, &input)?
+        }
+        other => return Err(RagError::InvalidInput(format!("unknown tool: {other}"))),
+    };
+    serde_json::to_string(&value)
+        .map_err(|e| RagError::Internal(format!("encode tool output: {e}")))
+}
+
+// ===== design::validation =====
 impl validation::Guest for Component {
-    /// `content_type` says what is being validated; `content_json` is the
-    /// content itself. Return `valid: false` with diagnostics to block, or
-    /// `valid: true` with diagnostics to warn without blocking.
     fn validate_content(
         _content_type: String,
         _content_json: String,
@@ -159,33 +166,36 @@ impl validation::Guest for Component {
     }
 }
 
-// ---- extension-design/prompting ----
-// Text merged into the designer's LLM system prompt. Use it to teach the model
-// vocabulary specific to this extension.
+// ===== design::prompting =====
 impl prompting::Guest for Component {
-    /// `section` groups related fragments; `priority` orders them, lower
-    /// first. Keep fragments short — every one costs context on every request.
     fn system_prompt_fragments() -> Vec<prompting::PromptFragment> {
-        Vec::new()
+        vec![prompting::PromptFragment {
+            section: "knowledge".to_string(),
+            content_markdown:
+                "A Qdrant-backed knowledge base is available. Call `rag_search` before \
+                 answering questions that depend on stored documents, and ground the \
+                 answer in the returned passages rather than prior knowledge."
+                    .to_string(),
+            priority: 100,
+        }]
     }
 }
 
-// ---- extension-design/knowledge ----
-// Reference material the designer can search and show. Optional: an extension
-// that contributes no documentation leaves all three returning empty.
+// ===== design::knowledge =====
 impl knowledge::Guest for Component {
     fn list_entries(_category_filter: Option<String>) -> Vec<knowledge::EntrySummary> {
+        // The knowledge interface is the designer's static, packaged
+        // knowledge base. This extension's content lives in Qdrant at runtime
+        // and is reached through `rag_search`, so there is nothing to list.
         Vec::new()
     }
 
     fn get_entry(id: String) -> Result<knowledge::Entry, types::ExtensionError> {
-        Err(types::ExtensionError::InvalidInput(format!(
-            "unknown entry: {id}"
+        Err(types::ExtensionError::NotFound(format!(
+            "no packaged knowledge entry: {id}"
         )))
     }
 
-    /// Ranked lookup for `query`, capped at `limit`. Called as the user types,
-    /// so keep it cheap.
     fn suggest_entries(_query: String, _limit: u32) -> Vec<knowledge::EntrySummary> {
         Vec::new()
     }
@@ -193,41 +203,74 @@ impl knowledge::Guest for Component {
 
 bindings::export!(Component with_types_in bindings);
 
-// Unit tests run on the host — no WASM, no designer, milliseconds. This is
-// where most of an extension's testing belongs: the guest exports are plain
-// Rust functions, so call them directly.
-//
-// `cargo test` needs `src/bindings.rs`, which is generated. Build once first
-// (`gtdx dev --once` or `cargo component build`), then test freely.
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn the_tool_is_listed() {
-        let tools = <Component as tools::Guest>::list_tools();
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name, "echo");
+    fn the_five_tools_reach_the_wit_layer_with_their_metadata_intact() {
+        let listed = <Component as tools::Guest>::list_tools();
+        assert_eq!(listed.len(), 5);
+        for tool in &listed {
+            assert!(
+                tool.agentic_worker_metadata.is_some(),
+                "{} lost its metadata crossing the WIT boundary",
+                tool.name
+            );
+            let caps = tool.capabilities.clone().unwrap_or_default();
+            assert!(caps.contains(&"flow".to_string()));
+            assert!(caps.contains(&"agentic_worker".to_string()));
+            assert!(tool.output_schema_json.is_some());
+        }
     }
 
+    /// The unknown-name guard must return before any secret is read or request
+    /// sent — which is both correct and the only reason this is testable on the
+    /// host at all.
     #[test]
-    fn echo_returns_its_arguments() {
-        let out = <Component as tools::Guest>::invoke_tool(
-            "echo".to_string(),
-            r#"{"message":"hi"}"#.to_string(),
+    fn an_unknown_tool_is_rejected_before_any_host_call() {
+        let err = <Component as tools::Guest>::invoke_tool(
+            "nope".to_string(),
+            "{}".to_string(),
         )
-        .expect("echo is implemented");
-        assert!(out.contains("echoed"), "got: {out}");
+        .unwrap_err();
+        assert!(matches!(err, types::ExtensionError::InvalidInput(_)));
     }
 
-    /// An unknown name is a caller mistake. Asserting the error keeps the
-    /// dispatch honest — a match arm that silently returned Ok would pass a
-    /// happy-path-only test.
+    /// A known tool with unusable arguments must also fail during parsing,
+    /// before the config lookup or any host call.
     #[test]
-    fn an_unknown_tool_is_an_error() {
-        assert!(
-            <Component as tools::Guest>::invoke_tool("nope".to_string(), "{}".to_string())
-                .is_err()
-        );
+    fn malformed_arguments_are_rejected_before_any_host_call() {
+        let err = <Component as tools::Guest>::invoke_tool(
+            tool_meta::SEARCH_TOOL.to_string(),
+            "{ not json".to_string(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, types::ExtensionError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn every_rag_error_maps_onto_a_distinct_extension_error() {
+        use crate::error::RagError;
+        assert!(matches!(
+            map_error(RagError::InvalidInput("x".into())),
+            types::ExtensionError::InvalidInput(_)
+        ));
+        assert!(matches!(
+            map_error(RagError::PermissionDenied("x".into())),
+            types::ExtensionError::PermissionDenied(_)
+        ));
+        assert!(matches!(
+            map_error(RagError::NotFound("x".into())),
+            types::ExtensionError::NotFound(_)
+        ));
+        assert!(matches!(
+            map_error(RagError::SchemaInvalid("x".into())),
+            types::ExtensionError::SchemaInvalid(_)
+        ));
+        assert!(matches!(
+            map_error(RagError::Internal("x".into())),
+            types::ExtensionError::Internal(_)
+        ));
     }
 }
