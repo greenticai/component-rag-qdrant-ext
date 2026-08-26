@@ -542,7 +542,7 @@ mod tests {
     fn upsert_rejects_non_object_payload_before_any_call() {
         let host = happy_host(1);
         let input =
-            crate::input::parse_upsert(r#"{"id":"a","text":"hi","payload":[1,2]}"#).unwrap();
+            crate::input::parse_upsert(r#"{"id":"1","text":"hi","payload":[1,2]}"#).unwrap();
         let err = upsert(&host, &cfg(), &input).unwrap_err();
         assert!(matches!(err, RagError::InvalidInput(_)), "got {err:?}");
         assert!(host.http.calls().is_empty(), "must not reach the network");
