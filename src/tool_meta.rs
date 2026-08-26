@@ -305,6 +305,80 @@ mod tests {
         }
     }
 
+    /// `describe.json`'s `contributions.tools` entries are generated from this
+    /// file by `print_contributions` below, but nothing stops someone from
+    /// editing a schema here without re-running the generator — `cargo test`,
+    /// clippy, `gtdx validate` and `gtdx lint` all stay green while the
+    /// designer catalogues the stale copy. This guards against that drift.
+    #[test]
+    fn describe_json_matches_the_tool_metadata_in_this_file() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../describe.json"))
+            .expect("describe.json must be valid JSON");
+        let published = manifest["contributions"]["tools"]
+            .as_array()
+            .expect("describe.json has no contributions.tools array");
+
+        let tools = all_tools();
+        assert_eq!(
+            published.len(),
+            tools.len(),
+            "describe.json has {} contributed tools but tool_meta.rs declares {} — \
+             a tool was added in one place and not the other",
+            published.len(),
+            tools.len()
+        );
+
+        for tool in &tools {
+            let entry = published
+                .iter()
+                .find(|e| e["name"] == tool.name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "describe.json has no contributions.tools entry named {}",
+                        tool.name
+                    )
+                });
+
+            assert_eq!(
+                entry["name"], tool.name,
+                "{}: name drifted from describe.json",
+                tool.name
+            );
+            assert_eq!(
+                entry["description"], tool.description,
+                "{}: description drifted from describe.json",
+                tool.name
+            );
+
+            // Compared as parsed JSON, not as strings, so formatting
+            // differences (whitespace, key order) cannot cause a false
+            // failure — only an actual schema difference should.
+            let published_schema_str = entry["input_schema"].as_str().unwrap_or_else(|| {
+                panic!("{}: describe.json input_schema is not a string", tool.name)
+            });
+            let published_schema: serde_json::Value = serde_json::from_str(published_schema_str)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{}: describe.json input_schema is not valid JSON: {e}",
+                        tool.name
+                    )
+                });
+            let code_schema: serde_json::Value = serde_json::from_str(tool.input_schema_json)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{}: tool_meta.rs input schema is not valid JSON: {e}",
+                        tool.name
+                    )
+                });
+            assert_eq!(
+                published_schema, code_schema,
+                "{}: input_schema in describe.json has drifted from tool_meta.rs — \
+                 regenerate with `RUNTIME_REF=rag-qdrant cargo test print_contributions -- --ignored --nocapture`",
+                tool.name
+            );
+        }
+    }
+
     /// Not an assertion — a generator. Prints the `contributions.tools` block
     /// for describe.json so the schemas are never hand-copied out of sync.
     /// Run: `cargo test print_contributions -- --ignored --nocapture`
