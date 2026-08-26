@@ -9,7 +9,7 @@ use crate::error::RagError;
 const DEFAULT_MAX_CHARS: usize = 1200;
 const DEFAULT_OVERLAP_CHARS: usize = 150;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct EmbeddingConfig {
     /// Base URL of an OpenAI-shaped embeddings API. `/embeddings` is appended.
     pub base_url: String,
@@ -17,7 +17,7 @@ pub struct EmbeddingConfig {
     pub dimensions: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ChunkConfig {
     #[serde(default = "default_max_chars")]
     pub max_chars: usize,
@@ -42,7 +42,7 @@ fn default_overlap_chars() -> usize {
     DEFAULT_OVERLAP_CHARS
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Config {
     pub qdrant_url: String,
     pub collection: String,
@@ -51,7 +51,53 @@ pub struct Config {
     pub chunk: ChunkConfig,
 }
 
-static CONFIG: OnceLock<Config> = OnceLock::new();
+/// A `OnceLock<Config>` plus the re-init policy around it, factored out of
+/// the free `store`/`current` functions so the policy — identical reload
+/// succeeds, differing reload fails — is testable against a fresh,
+/// independent instance instead of the process-wide static below. That
+/// keeps the `store()` round-trip tests (finding 4) from racing the
+/// process-wide `CONFIG`, which `reading_config_before_init_is_an_error_not_a_panic`
+/// depends on staying unset for the life of the test binary.
+struct ConfigStore(OnceLock<Config>);
+
+impl ConfigStore {
+    const fn new() -> Self {
+        Self(OnceLock::new())
+    }
+
+    /// A host may call `init` more than once — on a reload, a re-enable, or
+    /// an operator config change. A `OnceLock` cannot be replaced, so a
+    /// second call with the *same* config is treated as a harmless reload
+    /// and succeeds; a second call with a *different* config cannot be
+    /// honoured (the running instance would still use the old settings) and
+    /// must not be silently swallowed, so it fails loudly instead.
+    fn store(&self, cfg: Config) -> Result<(), RagError> {
+        if let Some(existing) = self.0.get() {
+            return if *existing == cfg {
+                Ok(())
+            } else {
+                Err(RagError::InvalidInput(
+                    "config: extension is already configured with different settings — \
+                     restart the extension to change them"
+                        .into(),
+                ))
+            };
+        }
+        self.0
+            .set(cfg)
+            .map_err(|_| RagError::InvalidInput("config: init called more than once".into()))
+    }
+
+    fn current(&self) -> Result<&Config, RagError> {
+        self.0.get().ok_or_else(|| {
+            RagError::InvalidInput(
+                "config: extension is not configured — lifecycle::init has not run".into(),
+            )
+        })
+    }
+}
+
+static CONFIG: ConfigStore = ConfigStore::new();
 
 /// Parse and validate operator configuration.
 ///
@@ -96,14 +142,14 @@ pub fn parse_config(json: &str) -> Result<Config, RagError> {
     Ok(cfg)
 }
 
-/// Store the parsed config. Called once from `lifecycle::init`.
+/// Store the parsed config. Called from `lifecycle::init`. See
+/// [`ConfigStore::store`] for the re-init policy.
 ///
 /// # Errors
-/// [`RagError::InvalidInput`] if `init` was already called.
+/// [`RagError::InvalidInput`] if `init` was already called with a config that
+/// differs from `cfg`.
 pub fn store(cfg: Config) -> Result<(), RagError> {
-    CONFIG
-        .set(cfg)
-        .map_err(|_| RagError::InvalidInput("config: init called more than once".into()))
+    CONFIG.store(cfg)
 }
 
 /// Borrow the stored config.
@@ -112,11 +158,7 @@ pub fn store(cfg: Config) -> Result<(), RagError> {
 /// [`RagError::InvalidInput`] when `lifecycle::init` has not run. Hosts are not
 /// required to call `init` before `invoke_tool`, so this is a real path.
 pub fn current() -> Result<&'static Config, RagError> {
-    CONFIG.get().ok_or_else(|| {
-        RagError::InvalidInput(
-            "config: extension is not configured — lifecycle::init has not run".into(),
-        )
-    })
+    CONFIG.current()
 }
 
 #[cfg(test)]
@@ -191,10 +233,60 @@ mod tests {
     #[test]
     fn reading_config_before_init_is_an_error_not_a_panic() {
         // `current()` on an un-stored OnceLock must return Err, never unwrap.
-        // This test asserts the shape of the error only; ordering against
-        // `store()` is not guaranteed across tests in one binary.
-        if let Err(e) = current() {
-            assert!(matches!(e, RagError::InvalidInput(_)));
-        }
+        // This is a real assertion, not `if let Err(e) = ...`, which would
+        // pass even if `current()` wrongly returned a config.
+        //
+        // This depends on nothing in this crate's test binary ever calling
+        // the module-level `store()` function, since it writes to the
+        // process-wide `CONFIG` static and `cargo test` runs a crate's unit
+        // tests in one process (in parallel threads, but sharing that one
+        // static). No test does: the `store()` re-init policy (finding 4,
+        // below) is tested against fresh, independent `ConfigStore`
+        // instances instead of the process-wide one, specifically so it
+        // never has to touch — and can never poison — this assertion.
+        assert!(matches!(current(), Err(RagError::InvalidInput(_))));
+    }
+
+    fn full_cfg() -> Config {
+        parse_config(FULL).unwrap()
+    }
+
+    #[test]
+    fn a_config_store_accepts_its_first_config() {
+        let store = ConfigStore::new();
+        assert!(store.store(full_cfg()).is_ok());
+        assert_eq!(store.current().unwrap().collection, "kb");
+    }
+
+    #[test]
+    fn a_second_store_of_an_identical_config_is_a_harmless_reload() {
+        let store = ConfigStore::new();
+        store.store(full_cfg()).unwrap();
+        // Same fields, freshly parsed — a distinct `Config` value that
+        // compares equal, not the same one reused.
+        assert!(store.store(full_cfg()).is_ok());
+        assert_eq!(store.current().unwrap().collection, "kb");
+    }
+
+    #[test]
+    fn a_second_store_of_a_differing_config_is_rejected_and_the_original_survives() {
+        let store = ConfigStore::new();
+        store.store(full_cfg()).unwrap();
+
+        let mut changed = full_cfg();
+        changed.collection = "other".to_string();
+        let err = store
+            .store(changed)
+            .expect_err("a changed config must be rejected");
+        let RagError::InvalidInput(msg) = err else {
+            panic!("expected InvalidInput");
+        };
+        assert!(msg.contains("different"), "message was: {msg}");
+        assert!(msg.contains("restart"), "message was: {msg}");
+
+        // The OnceLock can't be replaced, so the original config must still
+        // be the one in effect — the rejected call must not have discarded
+        // it silently.
+        assert_eq!(store.current().unwrap().collection, "kb");
     }
 }
