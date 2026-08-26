@@ -382,9 +382,10 @@ mod tests {
                 .is_ok()
         );
         assert!(parse_ensure_ack(400, br#"{"status":{"error":"bad dim"}}"#).is_err());
-        // A 5xx that merely mentions the phrase is still a failure — otherwise
-        // every ingest would proceed against a collection that may not exist.
-        assert!(parse_ensure_ack(503, b"retry: it may already exist").is_err());
+        // The body deliberately DOES contain the phrase, so the substring check
+        // passes and only the status gate can reject it. A fixture missing the
+        // phrase would pass this assertion even with the gate removed.
+        assert!(parse_ensure_ack(503, b"retry: the collection already exists upstream").is_err());
         // A 409 that is not an already-exists conflict is still a failure.
         assert!(parse_ensure_ack(409, b"collection is locked for snapshot").is_err());
     }
