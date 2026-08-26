@@ -26,6 +26,7 @@ pub mod host;
 pub mod embed;
 pub mod qdrant;
 pub mod ops;
+pub mod tool_meta;
 
 use bindings::exports::greentic::extension_base::{lifecycle, manifest};
 use bindings::exports::greentic::extension_design::{knowledge, prompting, tools, validation};
