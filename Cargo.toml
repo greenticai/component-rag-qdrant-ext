@@ -1,0 +1,30 @@
+[package]
+name = "component-rag-qdrant-ext"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["bimapangestu28"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen-rt = { version = "0.41", features = ["bitflags"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v5"] }
+
+[dev-dependencies]
+greentic-extension-sdk-testing = "1.2.9"
+serde_json = "1"
+
+[package.metadata.component]
+package = "greentic:rag-qdrant"
+
+[package.metadata.component.target]
+path = "wit"
+
+[package.metadata.component.target.dependencies]
+"greentic:extension-base" = { path = "wit/deps/greentic/extension-base" }
+"greentic:extension-host" = { path = "wit/deps/greentic/extension-host" }
+"greentic:extension-design" = { path = "wit/deps/greentic/extension-design" }

@@ -1,0 +1,8 @@
+contract_version = "0.2.0"
+generated_by = "gtdx 1.2.9"
+generated_at = "2026-08-26T12:30:56Z"
+
+[files]
+"wit/deps/greentic/extension-base/world.wit" = "sha256:f57d3b014d068e002b2c1053fd38e2bd7c1e2a123fa84101943f16905326bb88"
+"wit/deps/greentic/extension-design/world.wit" = "sha256:6b7b3689ca2d790e234ac0b175d50a28632e680fdb334e5f76c4559533a3717a"
+"wit/deps/greentic/extension-host/world.wit" = "sha256:11f6fc7615621e24a3b35c1c86779f403e52bcc36f24facba6434c2972f584b8"

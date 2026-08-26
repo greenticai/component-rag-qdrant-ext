@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo fmt:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo build:*)",
+      "Bash(cargo component build:*)",
+      "Bash(gtdx:*)",
+      "Bash(./build.sh)",
+      "Bash(./ci/local_check.sh)"
+    ]
+  }
+}

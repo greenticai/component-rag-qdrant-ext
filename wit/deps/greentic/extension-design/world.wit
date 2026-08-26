@@ -1,0 +1,190 @@
+package greentic:extension-design@0.3.0;
+
+interface tools {
+  use greentic:extension-base/types@0.2.0.{extension-error};
+  record tool-definition {
+    name: string,
+    description: string,
+    input-schema-json: string,
+    output-schema-json: option<string>,
+
+    // Sub-project #1 additions (see greentic-designer spec
+    // 2026-05-24-extension-capability-flag-design.md). Both optional for
+    // backward compatibility. Legacy extensions return `none` for both;
+    // consumers default capabilities to `["flow"]`.
+    capabilities: option<list<string>>,
+    agentic-worker-metadata: option<string>,
+  }
+  list-tools: func() -> list<tool-definition>;
+  invoke-tool: func(name: string, args-json: string) -> result<string, extension-error>;
+}
+
+interface validation {
+  use greentic:extension-base/types@0.2.0.{diagnostic};
+  record validate-result {
+    valid: bool,
+    diagnostics: list<diagnostic>,
+  }
+  validate-content: func(content-type: string, content-json: string) -> validate-result;
+}
+
+interface prompting {
+  record prompt-fragment {
+    section: string,
+    content-markdown: string,
+    priority: u32,
+  }
+  system-prompt-fragments: func() -> list<prompt-fragment>;
+}
+
+interface knowledge {
+  use greentic:extension-base/types@0.2.0.{extension-error};
+  record entry-summary {
+    id: string,
+    title: string,
+    category: string,
+    tags: list<string>,
+  }
+  record entry {
+    id: string,
+    title: string,
+    category: string,
+    tags: list<string>,
+    content-json: string,
+  }
+  list-entries: func(category-filter: option<string>) -> list<entry-summary>;
+  get-entry: func(id: string) -> result<entry, extension-error>;
+  suggest-entries: func(query: string, limit: u32) -> list<entry-summary>;
+}
+
+interface roles {
+  use greentic:extension-base/types@0.2.0.{diagnostic, extension-error};
+
+  /// Output channel a compiled role targets. Closed enum on purpose:
+  /// every channel here implies a downstream renderer the runner already
+  /// links. New targets land via WIT minor bumps (additive enums are a
+  /// breaking change in WIT, so this is the explicit version gate).
+  enum target-kind {
+    adaptive-card,
+    slack-block-kit,
+    teams-card,
+    plain-text,
+  }
+
+  /// One role advertised by an extension. The designer aggregates these
+  /// across every loaded design extension into a single registry keyed
+  /// by `name`. Conflicting names are a hard error at registry-build
+  /// time (designer-side decision, not encoded in WIT).
+  record role-spec {
+    /// Globally unique snake_case identifier, e.g. `topic_picker`.
+    /// Convention: extensions prefix with their short id when there is
+    /// ambiguity (`http_call` is fine; `media_carousel` from two
+    /// extensions must be `acme_media_carousel` vs `bravo_media_carousel`).
+    name: string,
+    /// Short single-line description shown in the LLM prompt catalog.
+    description: string,
+    /// Per-role JSON Schema (Draft 2020-12) for the DSL entry payload.
+    /// Stringly-encoded for the same reason `tool-definition.input-schema-json`
+    /// is — schemas are LLM-facing payloads, not host control data.
+    json-schema: string,
+    /// Output channel this role compiles to. The registry filters by
+    /// target at compile dispatch (one DSL doc, multi-target render).
+    target: target-kind,
+    /// Per-role schema version. Lets one extension version ship
+    /// `topic_picker` v1 and v2 side-by-side during a migration window.
+    /// Designer pins to the latest by default; flows can opt-in to a
+    /// specific version via `role-version` on the DSL entry.
+    schema-version: u32,
+    /// Whether the compiler reads flow-level context (other cards /
+    /// captured fields). Pure roles can be cached; context-aware roles
+    /// cannot. Cheap signal, avoids a "did the extension actually use
+    /// the context?" probe.
+    context-aware: bool,
+  }
+
+  /// Flow-level context handed to context-aware compilers. Empty for
+  /// pure roles. Designer fills this from the in-progress DSL document
+  /// before dispatch — extensions never reach back into the designer.
+  record compile-context {
+    /// All sibling DSL entries in the same flow, JSON array. Order
+    /// matches authoring order. Includes the entry being compiled so
+    /// the role can introspect its own position if needed.
+    flow-entries-json: string,
+    /// Optional flow id for diagnostics / cache keys.
+    flow-id: option<string>,
+    /// Locale tag (BCP-47, e.g. `en`, `id`, `nl-BE`). The compiler
+    /// MUST honour this when emitting user-visible strings; falling
+    /// back to `en` is acceptable but should be flagged via diagnostic.
+    locale: string,
+  }
+
+  /// Why a compile or validate call failed. Distinct from
+  /// `extension-error` because `extension-error` is for host-level
+  /// failures (capability denied, internal panic) while these are
+  /// role-domain failures the LLM / designer can act on.
+  variant role-error {
+    /// `name` was not in `list-roles()`. Designer surfaces as a
+    /// retry-with-hint to the LLM ("you picked an unknown role").
+    unknown-role(string),
+    /// `entry-json` failed schema validation. Payload carries the
+    /// list of diagnostics the validator produced.
+    invalid-input(list<diagnostic>),
+    /// Schema passed but the compiler rejected the input — e.g. two
+    /// options collide on `next`, markdown body references a missing
+    /// asset. Free-form message; not LLM-recoverable without a hint.
+    compile-failed(string),
+    /// Caller asked for a target this role does not implement.
+    /// `topic_picker` may register `adaptive-card` only; asking for
+    /// `slack-block-kit` returns this so the dispatcher can fall back
+    /// to plain-text or skip the channel.
+    target-not-supported(target-kind),
+    /// Caller pinned a `role-version` the extension no longer ships.
+    version-not-supported(u32),
+    /// Wrapped host-level failure (sandbox, broker, secrets). Reuse
+    /// the canonical variant rather than re-encoding it.
+    host(extension-error),
+  }
+
+  /// Register every role this extension provides. Called once per
+  /// extension at registry build time and re-called when the state
+  /// file watcher fires. Ordering is not significant.
+  list-roles: func() -> list<role-spec>;
+
+  /// Cheap path: validate `entry-json` against the role's JSON schema
+  /// without compiling. Used by the DSL editor for live feedback and
+  /// by the LLM retry loop ("did I get the shape right?").
+  /// Returns `[]` on success, otherwise the list of diagnostics.
+  /// No `result<>` wrapper — diagnostic-only, mirrors
+  /// `bundling.validate-config`.
+  validate-role: func(name: string, entry-json: string) -> list<diagnostic>;
+
+  /// Compile a single DSL entry to its target representation.
+  /// `entry-json` is the JSON-serialised DSL entry; the return value
+  /// is the canonical AdaptiveCard JSON (or the equivalent for the
+  /// declared `target`). Pass `none` for `ctx` when the role is pure;
+  /// the runtime enforces this against `role-spec.context-aware`.
+  compile-role: func(
+    name: string,
+    target: target-kind,
+    entry-json: string,
+    ctx: option<compile-context>,
+  ) -> result<string, role-error>;
+}
+
+world design-extension {
+  import greentic:extension-base/types@0.2.0;
+  import greentic:extension-host/logging@0.1.0;
+  import greentic:extension-host/i18n@0.1.0;
+  import greentic:extension-host/secrets@0.1.0;
+  import greentic:extension-host/broker@0.1.0;
+  import greentic:extension-host/http@0.1.0;
+  import greentic:extension-host/llm@0.1.0;
+
+  export greentic:extension-base/manifest@0.2.0;
+  export greentic:extension-base/lifecycle@0.2.0;
+  export tools;
+  export validation;
+  export prompting;
+  export knowledge;
+  export roles;
+}

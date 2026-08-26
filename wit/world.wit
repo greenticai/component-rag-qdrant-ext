@@ -1,0 +1,17 @@
+package greentic:rag-qdrant;
+
+world extension {
+  import greentic:extension-base/types@0.2.0;
+  import greentic:extension-host/logging@0.1.0;
+  import greentic:extension-host/i18n@0.1.0;
+  import greentic:extension-host/secrets@0.1.0;
+  import greentic:extension-host/broker@0.1.0;
+  import greentic:extension-host/http@0.1.0;
+
+  export greentic:extension-base/manifest@0.2.0;
+  export greentic:extension-base/lifecycle@0.2.0;
+  export greentic:extension-design/tools@0.3.0;
+  export greentic:extension-design/validation@0.3.0;
+  export greentic:extension-design/prompting@0.3.0;
+  export greentic:extension-design/knowledge@0.3.0;
+}

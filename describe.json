@@ -1,0 +1,52 @@
+{
+  "$schema": "https://store.greentic.cloud/schemas/describe-v2.json",
+  "apiVersion": "greentic.ai/v2",
+  "kind": "DesignExtension",
+  "compat": {
+    "min_designer_version": ">=1.2.0",
+    "min_runner_version": "^1.2.9",
+    "contract_version": "1.2.9"
+  },
+  "metadata": {
+    "id": "greentic.rag-qdrant",
+    "name": "component-rag-qdrant-ext",
+    "version": "0.1.0",
+    "summary": "A Greentic Designer design extension.",
+    "author": {
+      "name": "bimapangestu28"
+    },
+    "license": "MIT"
+  },
+  "capabilities": {
+    "offered": [],
+    "required": []
+  },
+  "runtime": {
+    "components": {
+      "rag-qdrant": {
+        "gtpack": {
+          "file": "extension.wasm",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+          "pack_id": "greentic.rag-qdrant",
+          "component_version": "0.1.0"
+        },
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "world": "greentic:rag-qdrant/extension@1.0.0"
+      }
+    },
+    "permissions": {
+      "network": [],
+      "secrets": [],
+      "callExtensionKinds": []
+    }
+  },
+  "contributions": {
+    "tools": [
+      {
+        "export": "greentic:extension-design/tools.invoke-tool",
+        "name": "echo",
+        "runtime_ref": "rag-qdrant"
+      }
+    ]
+  }
+}
