@@ -49,7 +49,11 @@ const SEARCH_INPUT: &str = r#"{
     "top_k": { "type": "integer", "minimum": 1, "description": "How many results to return (default 5)." },
     "filter": { "type": "object", "description": "A Qdrant filter object, passed through verbatim." },
     "collection": { "type": "string", "description": "Override the configured default collection." }
-  }
+  },
+  "oneOf": [
+    { "required": ["query"],  "not": { "required": ["vector"] } },
+    { "required": ["vector"], "not": { "required": ["query"] } }
+  ]
 }"#;
 
 const UPSERT_INPUT: &str = r#"{
@@ -61,7 +65,11 @@ const UPSERT_INPUT: &str = r#"{
     "vector": { "type": "array", "items": { "type": "number" }, "description": "A pre-computed embedding. Pass this OR text, not both." },
     "payload": { "type": "object", "description": "Arbitrary metadata stored alongside the point." },
     "collection": { "type": "string", "description": "Override the configured default collection." }
-  }
+  },
+  "oneOf": [
+    { "required": ["text"],   "not": { "required": ["vector"] } },
+    { "required": ["vector"], "not": { "required": ["text"] } }
+  ]
 }"#;
 
 const INGEST_INPUT: &str = r#"{
@@ -81,7 +89,11 @@ const DELETE_INPUT: &str = r#"{
     "ids": { "type": "array", "items": { "type": "string" }, "description": "Point ids to delete. Pass this OR doc_id, not both." },
     "doc_id": { "type": "string", "description": "Delete every chunk of this document. Pass this OR ids, not both." },
     "collection": { "type": "string", "description": "Override the configured default collection." }
-  }
+  },
+  "oneOf": [
+    { "required": ["ids"],    "not": { "required": ["doc_id"] } },
+    { "required": ["doc_id"], "not": { "required": ["ids"] } }
+  ]
 }"#;
 
 const ENSURE_INPUT: &str = r#"{
@@ -181,7 +193,7 @@ pub fn all_tools() -> Vec<ToolMeta> {
 
 #[cfg(test)]
 mod tests {
-    use crate::tool_meta::*;
+    use super::*;
 
     #[test]
     fn all_five_tools_are_listed() {
@@ -241,6 +253,39 @@ mod tests {
                 tool.name
             );
             assert!(meta.get("usage_hint").is_some(), "{} has no usage_hint", tool.name);
+        }
+    }
+
+    /// `input.rs` rejects "both" and "neither" outright. A model that reads only
+    /// `required`/`properties` and skips the prose would keep constructing those
+    /// calls and keep getting InvalidInput, so the constraint is stated formally
+    /// too — and asserted here, or it silently rots out of the schemas.
+    #[test]
+    fn the_either_or_tools_encode_that_constraint_formally_not_only_in_prose() {
+        for (name, pair) in [
+            ("rag_search", ["query", "vector"]),
+            ("rag_upsert", ["text", "vector"]),
+            ("rag_delete", ["ids", "doc_id"]),
+        ] {
+            let tool = all_tools()
+                .into_iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("{name} missing"));
+            let schema: serde_json::Value =
+                serde_json::from_str(tool.input_schema_json).unwrap();
+            let branches = schema["oneOf"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{name} has no oneOf"))
+                .clone();
+            assert_eq!(branches.len(), 2, "{name}");
+            for (i, branch) in branches.iter().enumerate() {
+                assert_eq!(branch["required"][0], pair[i], "{name} branch {i}");
+                assert_eq!(
+                    branch["not"]["required"][0],
+                    pair[1 - i],
+                    "{name} branch {i}"
+                );
+            }
         }
     }
 
