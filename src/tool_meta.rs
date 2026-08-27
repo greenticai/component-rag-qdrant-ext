@@ -1,4 +1,4 @@
-//! Static metadata for the five RAG tools. Pure, so the capability flags and
+//! Static metadata for the six RAG tools. Pure, so the capability flags and
 //! the agentic-worker metadata are asserted by a host test rather than
 //! discovered in production.
 
