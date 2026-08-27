@@ -10,13 +10,14 @@
   "metadata": {
     "id": "greentic.rag-qdrant",
     "name": "RAG (Qdrant)",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "summary": "Semantic search, ingestion and deletion over a Qdrant collection",
     "description": "Design extension exposing six tools to both the agentic worker and flow nodes: rag_search, rag_upsert, rag_ingest, rag_delete, rag_collection_ensure and rag_list. Text is embedded through a configurable OpenAI-shaped embeddings API; callers holding their own vectors can pass them directly. Ingestion chunks a document, deletes that doc_id's previous chunks, then upserts the new ones, so re-ingesting never duplicates or orphans content. rag_list enumerates stored documents, grouped by doc_id, using Qdrant's scroll API with pagination surfaced to the caller.",
     "author": {
       "name": "bimapangestu28"
     },
     "license": "MIT",
+    "repository": "https://github.com/greenticai/component-rag-qdrant-ext",
     "keywords": [
       "rag",
       "qdrant",
@@ -41,7 +42,7 @@
           "file": "extension.wasm",
           "sha256": "f7966bc80caa84845c8528a2b2bc7f13830ce5f4c5118c69b8e56904565ed2c7",
           "pack_id": "greentic.rag-qdrant",
-          "component_version": "0.1.0"
+          "component_version": "0.2.0"
         },
         "sha256": "f7966bc80caa84845c8528a2b2bc7f13830ce5f4c5118c69b8e56904565ed2c7",
         "world": "greentic:rag-qdrant/extension@1.0.0"
