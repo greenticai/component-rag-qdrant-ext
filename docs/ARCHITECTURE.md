@@ -4,7 +4,9 @@ This is the inside view: how this extension was built, and what every tracked fi
 for. [`README.md`](../README.md) covers usage — quick start, configuration, the tool
 reference, a worked example, and the reasoning behind four design decisions. Read that
 first if you want to *call* this extension. Read this one if you want to *build your
-own* extension shaped like it.
+own* extension shaped like it — or, for a step-by-step build tutorial that leans on
+both this document and `README.md`, see
+[`docs/HOW-TO-MAKE-A-RAG-EXTENSION.md`](HOW-TO-MAKE-A-RAG-EXTENSION.md).
 
 All facts below were checked against the code at the commit this document was written
 against (`v0.3.0`, 115 tests passing). Where a claim could not be checked against

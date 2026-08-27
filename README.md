@@ -19,6 +19,19 @@ handful of ordering bugs that shape was built to make impossible. Read
 [Architecture](#architecture) and [Design decisions worth stealing](#design-decisions-worth-stealing)
 before you write your first `bindings::` call.
 
+## Documentation
+
+- **This file** — call this extension: quick start, configuration, the tool
+  reference, a worked example, and the reasoning behind four design decisions.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — build your own extension
+  shaped like this one: the file-by-file inside view, the pure/host-boundary
+  split, and what is and isn't proven about the contributed view.
+- [`docs/HOW-TO-MAKE-A-RAG-EXTENSION.md`](docs/HOW-TO-MAKE-A-RAG-EXTENSION.md) —
+  a step-by-step build tutorial, for anyone building a RAG extension of their
+  own (Qdrant or otherwise) from nothing.
+- [`AGENTS.md`](AGENTS.md) — the agent-facing map, for an AI coding agent
+  (Claude Code, Codex, or similar) working in this repository.
+
 ## Quick start
 
 ### Prerequisites
