@@ -97,12 +97,13 @@ Passed to `lifecycle::init` as JSON:
 | Field | Required | Default | Notes |
 |---|---|---|---|
 | `qdrant_url` | yes | — | e.g. `https://xyz.qdrant.io:6333`. Trailing slash is stripped. |
-| `collection` | yes | — | Default collection; every tool can override it per call. |
+| `collection` | yes | — | Fallback collection, used when the host sends no per-tenant one. See [Collections and tenancy](#collections-and-tenancy). |
 | `embedding.base_url` | yes | — | `/embeddings` is appended. Any OpenAI-shaped API. |
 | `embedding.model` | yes | — | e.g. `text-embedding-3-small`. |
 | `embedding.dimensions` | yes | — | Must match the collection's vector width. |
 | `chunk.max_chars` | no | `1200` | Characters, not bytes. |
 | `chunk.overlap_chars` | no | `150` | Must be less than `max_chars`. |
+| `require_tenant_overlay` | no | `false` | Refuse any call the host did not stamp a tenant collection onto, instead of falling back to `collection`. **Turn this on for a multi-tenant install** — see [Collections and tenancy](#collections-and-tenancy). |
 
 ## Secrets
 
@@ -343,30 +344,59 @@ leaving only the caller's original `metadata`.
 
 ## Knowledge base view
 
-`describe.json` contributes one UI page under `contributions.views[]`:
-
-```json
-{
-  "id": "knowledge",
-  "surface": "designer",
-  "title_key": "view.knowledge.label",
-  "title_fallback": "Knowledge base",
-  "entry": "index.html",
-  "placement": { "slot": "designer.sidebar", "order": 20 },
-  "min_visibility": "member",
-  "tools": ["rag_list", "rag_ingest", "rag_delete", "rag_search"]
-}
-```
-
 It exists so someone who will never call a tool by hand can still curate the
 knowledge base: list what is stored, upload a document, delete one, and search.
-Its assets live in `assets/views/knowledge/` and ship inside the `.gtxpack`,
-with a sha256 per file in `manifest.json`.
+It ships on **both** host surfaces.
 
-**A view is declared per surface.** `surface` takes one value and `entry` may
-not escape `assets/views/<id>/`, so rendering the same page in the Admin
-console as well means a *second* entry with its own id and its own directory.
-This repo ships the Designer one only.
+`describe.json` contributes it under `contributions.views[]` as two entries:
+
+```json
+[
+  {
+    "id": "knowledge",
+    "surface": "designer",
+    "entry": "index.html",
+    "placement": { "slot": "designer.sidebar", "order": 20 },
+    "min_visibility": "member",
+    "tools": ["rag_list", "rag_ingest", "rag_delete", "rag_search"]
+  },
+  {
+    "id": "knowledge-admin",
+    "surface": "admin",
+    "entry": "index.html",
+    "placement": { "slot": "admin.sidebar", "order": 20 },
+    "min_visibility": "tenant_admin",
+    "tools": ["rag_list", "rag_ingest", "rag_delete", "rag_search"]
+  }
+]
+```
+
+(`title_key` and `title_fallback` elided above; both entries use
+`view.knowledge.label` / "Knowledge base".)
+
+#### Why two entries, and two copies of the page
+
+`Surface` holds a single value, and view ids must be unique across the whole
+array because the host namespaces them into a route (`<extension id>/<view
+id>`), so one entry can never cover both hosts.
+
+The awkward part is the assets. `gtdx lint` resolves `entry` at
+`assets/views/<view id>/<entry>`, and `entry` may not contain `..`, so **each
+id needs its own directory** — the two entries cannot point into one shared
+bundle.
+
+A symlinked second directory looks like it solves this and does not: lint
+follows the symlink and passes, while the packer copies only real files, so the
+`.gtxpack` ships **nothing** under the symlinked id. That combination — lint
+clean, pack broken — is worse than the duplication, so the page is duplicated
+for real into `assets/views/knowledge-admin/`.
+
+The two copies are byte-identical and must stay that way; the page is
+surface-agnostic, and anything that ever needs to differ should branch on
+`surface` from the host's `init` message rather than fork the file. A test,
+`view_asset_tests::the_designer_and_admin_copies_of_the_view_are_identical`,
+fails the build if they drift. The cost is that the pack carries the bundle
+twice, about 115 KB.
 
 ### What the page may reach
 
@@ -408,7 +438,7 @@ the conversion itself, before anything is sent:
 | `.pdf` | Text extracted in-page by `pdf.js` — see below. |
 | anything else | Rejected by name, with a message naming the formats that do work. |
 
-`assets/views/knowledge/pdf.js` is a dependency-free PDF text extractor: it
+`pdf.js` is a dependency-free PDF text extractor: it
 inflates `/FlateDecode` streams with the browser's own `DecompressionStream`,
 walks the page tree (including `/ObjStm` object streams and PNG predictors),
 and maps glyphs to Unicode via `/ToUnicode` CMaps, then `/Differences`
@@ -450,24 +480,89 @@ silently stored.
 - **Large files must not freeze the tab.** File reading and PDF extraction
   yield to the event loop and report progress; the preview is capped.
 
+### Who may see it
+
+The two entries carry different floors, because their audiences differ.
+
+**Designer — `member`.** It was `tenant_admin` while the collection was
+process-wide and a caller could name any collection it liked; with the host now
+stamping the tenant's collection and a per-call override refused, a member
+cannot reach another tenant's data through this page. `min_visibility` is a
+*floor*, not a grant: platform admins decide which tenants get the extension at
+all, and tenant admins decide placement and which of their teams actually see
+the view. A `member` floor lets a tenant admin delegate knowledge curation to a
+content team — which is the whole point of a page aimed at non-technical
+curators. A `tenant_admin` floor would forbid that permanently, in a signed
+artifact.
+
+**Admin console — `tenant_admin`.** The Admin console is an operator surface;
+practically everyone who can open it is already a tenant admin or above, so a
+`member` floor there would claim an audience that does not exist and understate
+who the page is for. Declaring `tenant_admin` says what is actually true.
+
+Note this is about *isolation*, which is now handled below the UI. The page can
+delete any document in its tenant, and deciding who inside a tenant may do that
+is tenant and team configuration — not something either floor settles.
+
 ### Collections and tenancy
 
-**The page never sends a `collection` argument.** Every tool accepts one as an
-override, and the page deliberately declines to use it, letting each call fall
-back to the collection from operator config.
+**The page never sends a `collection` argument**, and under a multi-tenant host
+it would be refused if it did.
 
-That is a correctness decision, not a convenience one. `collection` and
-`qdrant_url` both come from the single `Config` that `lifecycle::init` stores
-in a process-wide `OnceLock` (`src/config.rs`), and a second `init` carrying
-*different* settings is rejected rather than honoured. There is no tenant in
-`init`, and no tenant in any tool's arguments. So a collection chosen in the
-browser would be a client-supplied target with nothing checking it — the
-opposite of an isolation boundary. Per-tenant secret resolution does not close
-this either: it varies the API key while `qdrant_url` and `collection` stay
-shared, so every tenant would be pointed at the same collection.
+The host stamps a reserved argument, `_tenant_overlay`, onto every tool call on
+both surfaces. It carries this extension's *effective* configuration for the
+calling tenant — the operator baseline deep-merged with that tenant's override,
+resolved from the admin's `extension_config` tables. Crucially, both hosts
+**strip `_tenant_overlay` from the caller's own arguments unconditionally** and
+re-insert their own, including when a tenant has no override configured. That
+unconditional strip is what makes it trustworthy: without it, a page could
+smuggle `_tenant_overlay: {"collection": "someone-elses"}` during the window
+when no override happened to be set.
 
-Isolating tenants therefore has to happen host-side, by stamping the caller's
-tenant into the call — not in this page, and not by having the UI pick a name.
+`collection_of()` in `src/ops.rs` therefore resolves, highest first:
+
+1. `_tenant_overlay.collection` — host-set, unforgeable, the isolation boundary.
+2. the caller's `collection` argument — only when no overlay pins one.
+3. `collection` from the operator config.
+
+**A caller `collection` is refused whenever the overlay pins one — even when it
+matches.** Silently ignoring a disagreement would let a flow author believe they
+were reading a collection they were not. Refusing only a disagreement would
+leave the matching case as a quiet invitation to hard-code a tenant's collection
+name into a flow: it reviews cleanly, works until the tenant is reconfigured or
+the flow is copied to another tenant, then fails somewhere far away. One total
+rule is easier to document, test and act on than a rule with an exception in it.
+
+Step 2 is what keeps single-tenant installs and local development working. With
+no overlay there is nothing to undermine, and `collection` behaves exactly as it
+always has.
+
+The resolution happens **before** any host call — before chunking, before
+embedding. A refusal must not first bill the operator for embedding a document
+it is about to reject, and an authorisation check belongs ahead of the side
+effects rather than between them.
+
+#### Where this is still not airtight
+
+- **It fails open on a host that does not stamp.** With no overlay the guest
+  cannot tell "single-tenant install" from "host too old to stamp one", and the
+  second silently serves every tenant the same collection. Set
+  **`require_tenant_overlay: true`** on any multi-tenant install: unstamped
+  calls are then refused rather than quietly falling back. It is off by default
+  only because turning it on would break every single-tenant install.
+- **Only `collection` is applied from the overlay.** If an operator isolates
+  tenants by *cluster* instead, a differing `_tenant_overlay.qdrant_url` is
+  **refused** with a clear error rather than ignored — every request builder
+  here reads `qdrant_url` off the process config, so honouring the collection
+  while silently using the baseline cluster would be exactly the cross-tenant
+  read to avoid. An overlay that merely repeats the configured URL is accepted.
+- **`embedding` and `chunk` in the overlay are ignored.** A tenant that
+  overrides `embedding.dimensions` would get vectors of the process-wide width;
+  Qdrant rejects a wrong-width write, so this fails loudly rather than
+  corrupting an index — but it is not *supported*.
+- **Isolation is not authorization.** Per-tenant collections stop tenant A
+  reading tenant B. They say nothing about which people *inside* a tenant may
+  delete its documents.
 
 ## Architecture
 
@@ -637,10 +732,12 @@ gtdx publish       # produce dist/greentic.rag-qdrant-<version>.gtxpack + instal
 - `src/input.rs`, `src/qdrant.rs`, `src/embed.rs`, `src/chunk.rs`, `src/config.rs`, `src/error.rs`
   — pure modules: argument parsing, Qdrant request/response handling, the
   embeddings client, text chunking, operator config, and the error type
-- `assets/views/knowledge/` — the contributed Designer view: `index.html`,
-  `style.css`, `app.js`, the dependency-free `pdf.js` text extractor, and
-  `bridge.js` (copied verbatim from the SDK scaffold — see
-  [Knowledge base view](#knowledge-base-view))
+- `assets/views/knowledge/` — the contributed view: `index.html`, `style.css`,
+  `app.js`, the dependency-free `pdf.js` text extractor, and `bridge.js`
+  (copied verbatim from the SDK scaffold)
+- `assets/views/knowledge-admin/` — a byte-identical copy of the above, because
+  each view id needs its own directory. Kept in step by a test; see
+  [Why two entries, and two copies of the page](#why-two-entries-and-two-copies-of-the-page)
 - `wit/`          — WIT contract (vendored by `gtdx new`; see `.gtdx-contract.lock`)
 - `i18n/en.json`  — user-facing strings
 - `AGENTS.md`     — guidance for AI coding agents (Claude Code, Codex, …); see

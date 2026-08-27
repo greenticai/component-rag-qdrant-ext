@@ -45,9 +45,11 @@ repository. This is a Greentic Designer **design** extension scaffolded by
 - `src/config.rs`         — operator configuration, parsed once in `lifecycle::init`.
 - `src/error.rs`          — the extension's own error type; only `lib.rs` maps
   it onto the WIT `extension-error`, so no other module needs bindings.
-- `assets/views/knowledge/` — the contributed Designer view (see below). Browser
-  code, not Rust: `index.html`, `style.css`, `app.js`, `pdf.js` (a
-  dependency-free PDF text extractor) and `bridge.js`.
+- `assets/views/knowledge/` — the contributed view (see below). Browser code,
+  not Rust: `index.html`, `style.css`, `app.js`, `pdf.js` (a dependency-free
+  PDF text extractor) and `bridge.js`.
+- `assets/views/knowledge-admin/` — a byte-identical copy of the above, serving
+  the Admin surface. Edit both, or the build fails; see below.
 - `wit/`                 — WIT contract, vendored by `gtdx new` (see `.gtdx-contract.lock`)
 - `i18n/en.json`         — user-facing strings
 - `build.sh`             — compile the wasm
@@ -173,8 +175,21 @@ copy is the pure/host-boundary module split in Layout above, not this list.
 
 ## The contributed view (`assets/views/knowledge/`)
 
-`contributions.views[]` declares one Designer page for curating the knowledge
-base — list, upload, delete, search. Read
+`contributions.views[]` declares **two** entries for one page — `knowledge`
+(Designer) and `knowledge-admin` (Admin) — for curating the knowledge base:
+list, upload, delete, search.
+
+**Change the page in both directories.** `Surface` is single-valued and view
+ids must be unique, so both hosts need their own entry; `gtdx lint` resolves
+`entry` under `assets/views/<view id>/` and forbids `..`, so each id needs its
+own real directory. Do **not** try to share one with a symlink: lint follows it
+and passes, the packer copies only real files, and the pack then ships nothing
+under that id — lint clean, install broken. The two copies must stay
+byte-identical, and
+`view_asset_tests::the_designer_and_admin_copies_of_the_view_are_identical`
+fails the build if they drift. If the page ever needs to behave differently per
+host, branch on `surface` from the host's `init` message rather than forking
+the file. Read
 [README.md § Knowledge base view](README.md#knowledge-base-view) before you
 change anything in there. The rules that are easy to break by accident:
 
@@ -189,12 +204,36 @@ change anything in there. The rules that are easy to break by accident:
 - **Never `innerHTML` anything tool-derived**, and never `window.confirm` /
   `window.alert` (a native modal blocks the frame's event loop and strands
   every bridge reply). Confirmation is in-page.
-- **The page must not send a `collection` argument.** See
+- **The page must not send a `collection` argument.** The host stamps the
+  tenant's collection via the reserved `_tenant_overlay` args key, and
+  `ops::collection_of` now *refuses* a per-call override when it has — so
+  sending one turns every call into an error. See
   [README.md § Collections and tenancy](README.md#collections-and-tenancy).
 - `runtime.permissions.ui` is intentionally empty: the page only uses
   `invokeTool`, which is authorised by `views[].tools`, not by `ui`.
 - After changing any of it: `gtdx lint` **and** `gtdx validate` (lint works from
   raw JSON and will not catch a bad `views[].tools` entry; validate will).
+
+## Tenant isolation
+
+`_tenant_overlay` is a reserved tool-argument key the host stamps onto **every**
+call, carrying this extension's effective per-tenant config. Both hosts strip it
+from the caller's own args first, so inside the guest it is trusted; a plain
+`collection` argument never can be.
+
+`ops::collection_of` resolves overlay → caller argument → process config, and
+refuses a caller argument outright whenever the overlay pins a collection. If
+you add a tool, route it through `collection_of` and resolve **before** any host
+call — a refusal must not first spend an embeddings request, and the check
+belongs ahead of the side effects. `input::TenantOverlay` deliberately ignores
+unknown keys so a host that learns to send more of the config cannot break a
+guest that has not learned to read it.
+
+Never cache the overlay in a `static`. The config `OnceLock` is per-instance;
+the overlay is per-call, and one instance serves many tenants.
+
+Read [README.md § Collections and tenancy](README.md#collections-and-tenancy),
+especially "Where this is still not airtight", before changing any of it.
 
 ## Secrets
 

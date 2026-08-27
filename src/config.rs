@@ -49,6 +49,17 @@ pub struct Config {
     pub embedding: EmbeddingConfig,
     #[serde(default)]
     pub chunk: ChunkConfig,
+    /// Refuse any call the host did not stamp a tenant collection onto,
+    /// instead of falling back to `collection` above.
+    ///
+    /// Off by default, because single-tenant installs and local development
+    /// have no overlay and must keep working. Multi-tenant operators should
+    /// turn it on: without it the guest cannot tell "no overlay because this
+    /// install is single-tenant" from "no overlay because the host is too old
+    /// to stamp one", and those two fail in opposite directions — the first
+    /// harmlessly, the second by serving every tenant the same collection.
+    #[serde(default)]
+    pub require_tenant_overlay: bool,
 }
 
 /// A `OnceLock<Config>` plus the re-init policy around it, factored out of
@@ -175,6 +186,24 @@ mod tests {
       },
       "chunk": { "max_chars": 1200, "overlap_chars": 150 }
     }"#;
+
+    /// Default off: a single-tenant install and local development have no
+    /// overlay and must keep working without touching their config.
+    #[test]
+    fn require_tenant_overlay_defaults_to_off() {
+        let cfg = parse_config(FULL).expect("FULL must parse");
+        assert!(!cfg.require_tenant_overlay);
+    }
+
+    #[test]
+    fn require_tenant_overlay_can_be_switched_on() {
+        let json = FULL.replace(
+            r#""collection": "kb""#,
+            r#""collection": "kb", "require_tenant_overlay": true"#,
+        );
+        let cfg = parse_config(&json).expect("config with the flag must parse");
+        assert!(cfg.require_tenant_overlay);
+    }
 
     #[test]
     fn a_full_config_parses() {

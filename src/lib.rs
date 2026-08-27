@@ -208,6 +208,42 @@ impl knowledge::Guest for Component {
 bindings::export!(Component with_types_in bindings);
 
 #[cfg(test)]
+mod view_asset_tests {
+    //! `contributions.views[]` declares two entries — one per host surface —
+    //! and `gtdx lint` resolves each entry under `assets/views/<view id>/`,
+    //! so each id needs its own real directory. The packer copies only real
+    //! files (a symlinked view directory lints clean and then ships *nothing*,
+    //! which is a lint-clean broken install), so the two surfaces are served
+    //! by two byte-identical copies of the same page.
+    //!
+    //! Two copies that must stay identical is a drift hazard, so it is checked
+    //! rather than trusted. `include_str!` resolves at compile time, so this
+    //! needs no filesystem access when the test runs.
+
+    macro_rules! assert_view_copies_match {
+        ($($file:literal),+ $(,)?) => {
+            $(
+                assert_eq!(
+                    include_str!(concat!("../assets/views/knowledge/", $file)),
+                    include_str!(concat!("../assets/views/knowledge-admin/", $file)),
+                    concat!(
+                        $file,
+                        " differs between assets/views/knowledge/ and \
+                         assets/views/knowledge-admin/. Both surfaces must serve the same \
+                         page; copy the changed file across."
+                    )
+                );
+            )+
+        };
+    }
+
+    #[test]
+    fn the_designer_and_admin_copies_of_the_view_are_identical() {
+        assert_view_copies_match!("index.html", "app.js", "bridge.js", "pdf.js", "style.css");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
