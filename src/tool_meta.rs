@@ -7,6 +7,7 @@ pub const UPSERT_TOOL: &str = "rag_upsert";
 pub const INGEST_TOOL: &str = "rag_ingest";
 pub const DELETE_TOOL: &str = "rag_delete";
 pub const ENSURE_TOOL: &str = "rag_collection_ensure";
+pub const LIST_TOOL: &str = "rag_list";
 
 pub struct ToolMeta {
     pub name: &'static str,
@@ -105,6 +106,35 @@ const ENSURE_INPUT: &str = r#"{
   }
 }"#;
 
+const LIST_INPUT: &str = r#"{
+  "type": "object",
+  "properties": {
+    "limit": { "type": "integer", "minimum": 1, "description": "Max chunks to scan per page (default 50). Chunk counts in the response are only for chunks returned within this page." },
+    "offset": { "description": "Opaque page cursor from a previous call's next_page_offset. Omit to start from the first page." },
+    "filter": { "type": "object", "description": "A Qdrant filter object, passed through verbatim." },
+    "collection": { "type": "string", "description": "Override the configured default collection." }
+  }
+}"#;
+
+const LIST_OUTPUT: &str = r#"{
+  "type": "object",
+  "required": ["documents"],
+  "properties": {
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "doc_id": { "type": "string" },
+          "chunk_count": { "type": "integer" },
+          "metadata": { "type": "object" }
+        }
+      }
+    },
+    "next_page_offset": { "description": "Present only when another page exists. Pass verbatim as `offset` on the next call." }
+  }
+}"#;
+
 const SEARCH_META: &str = r#"{
   "usage_hint": "Retrieve passages from the knowledge base by meaning. Pass a natural-language query; the extension embeds it and returns the closest stored chunks with their scores and metadata. Use this before answering anything that depends on stored documents.",
   "side_effects": "read",
@@ -138,6 +168,13 @@ const ENSURE_META: &str = r#"{
   "side_effects": "write",
   "cost": "low",
   "confirmation_required": true
+}"#;
+
+const LIST_META: &str = r#"{
+  "usage_hint": "Enumerate the documents stored in the knowledge base, grouped by doc_id with a chunk count and the metadata stored at ingest. Use this to answer what is in the knowledge base before deciding what to search, ingest or delete. Results are paginated: pass the previous response's next_page_offset back as offset to continue.",
+  "side_effects": "read",
+  "cost": "low",
+  "confirmation_required": false
 }"#;
 
 fn both() -> Vec<String> {
@@ -188,6 +225,14 @@ pub fn all_tools() -> Vec<ToolMeta> {
             capabilities: both(),
             agentic_worker_metadata: ENSURE_META,
         },
+        ToolMeta {
+            name: LIST_TOOL,
+            description: "Enumerate stored documents, grouped by doc_id, with pagination.",
+            input_schema_json: LIST_INPUT,
+            output_schema_json: LIST_OUTPUT,
+            capabilities: both(),
+            agentic_worker_metadata: LIST_META,
+        },
     ]
 }
 
@@ -196,7 +241,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_five_tools_are_listed() {
+    fn all_six_tools_are_listed() {
         let names: Vec<&str> = all_tools().into_iter().map(|t| t.name).collect();
         assert_eq!(
             names,
@@ -205,7 +250,8 @@ mod tests {
                 "rag_upsert",
                 "rag_ingest",
                 "rag_delete",
-                "rag_collection_ensure"
+                "rag_collection_ensure",
+                "rag_list",
             ]
         );
     }
@@ -300,6 +346,7 @@ mod tests {
             match tool.name {
                 "rag_search" => assert!(!confirm, "search must not prompt"),
                 "rag_upsert" => assert!(!confirm, "upsert must not prompt"),
+                "rag_list" => assert!(!confirm, "list must not prompt"),
                 _ => assert!(confirm, "{} must prompt", tool.name),
             }
         }

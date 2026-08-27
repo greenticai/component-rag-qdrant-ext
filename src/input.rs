@@ -10,6 +10,10 @@ fn default_top_k() -> u32 {
     5
 }
 
+fn default_list_limit() -> u32 {
+    50
+}
+
 fn default_distance() -> String {
     "Cosine".to_string()
 }
@@ -73,6 +77,23 @@ pub struct EnsureInput {
     pub dimensions: Option<u32>,
     #[serde(default = "default_distance")]
     pub distance: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ListInput {
+    /// Page size: chunks scanned per Qdrant scroll call, not documents.
+    /// Grouping by `doc_id` happens after the page comes back, so a doc whose
+    /// chunks straddle a page boundary shows a partial count on each page.
+    #[serde(default = "default_list_limit")]
+    pub limit: u32,
+    /// Opaque cursor from a previous call's `next_page_offset`. Omit to start
+    /// from the first page.
+    #[serde(default)]
+    pub offset: Option<Value>,
+    #[serde(default)]
+    pub filter: Option<Value>,
+    #[serde(default)]
+    pub collection: Option<String>,
 }
 
 fn decode<T: for<'de> Deserialize<'de>>(tool: &str, json: &str) -> Result<T, RagError> {
@@ -189,6 +210,18 @@ pub fn parse_ensure(json: &str) -> Result<EnsureInput, RagError> {
     Ok(parsed)
 }
 
+/// # Errors
+/// [`RagError::InvalidInput`] on malformed JSON or a `limit` of zero.
+pub fn parse_list(json: &str) -> Result<ListInput, RagError> {
+    let parsed: ListInput = decode("rag_list", json)?;
+    if parsed.limit == 0 {
+        return Err(RagError::InvalidInput(
+            "rag_list: limit must be greater than zero".into(),
+        ));
+    }
+    Ok(parsed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +328,28 @@ mod tests {
             "Dot"
         );
         assert!(parse_ensure(r#"{"distance":"Manhattan"}"#).is_err());
+    }
+
+    #[test]
+    fn list_defaults_limit_and_leaves_offset_and_filter_unset() {
+        let got = parse_list(r#"{}"#).unwrap();
+        assert_eq!(got.limit, 50);
+        assert!(got.offset.is_none());
+        assert!(got.filter.is_none());
+        assert!(got.collection.is_none());
+    }
+
+    #[test]
+    fn list_rejects_a_zero_limit() {
+        let err = parse_list(r#"{"limit":0}"#).unwrap_err();
+        assert!(matches!(err, RagError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn list_accepts_an_explicit_offset_and_filter() {
+        let got = parse_list(r#"{"limit":10,"offset":"abc","filter":{"must":[]}}"#).unwrap();
+        assert_eq!(got.limit, 10);
+        assert_eq!(got.offset, Some(serde_json::json!("abc")));
+        assert_eq!(got.filter, Some(serde_json::json!({"must":[]})));
     }
 }

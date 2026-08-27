@@ -12,7 +12,7 @@
     "name": "RAG (Qdrant)",
     "version": "0.1.0",
     "summary": "Semantic search, ingestion and deletion over a Qdrant collection",
-    "description": "Design extension exposing five tools to both the agentic worker and flow nodes: rag_search, rag_upsert, rag_ingest, rag_delete and rag_collection_ensure. Text is embedded through a configurable OpenAI-shaped embeddings API; callers holding their own vectors can pass them directly. Ingestion chunks a document, deletes that doc_id's previous chunks, then upserts the new ones, so re-ingesting never duplicates or orphans content.",
+    "description": "Design extension exposing six tools to both the agentic worker and flow nodes: rag_search, rag_upsert, rag_ingest, rag_delete, rag_collection_ensure and rag_list. Text is embedded through a configurable OpenAI-shaped embeddings API; callers holding their own vectors can pass them directly. Ingestion chunks a document, deletes that doc_id's previous chunks, then upserts the new ones, so re-ingesting never duplicates or orphans content. rag_list enumerates stored documents, grouped by doc_id, using Qdrant's scroll API with pagination surfaced to the caller.",
     "author": {
       "name": "bimapangestu28"
     },
@@ -177,6 +177,29 @@
         "export": "greentic:extension-design/tools.invoke-tool",
         "input_schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"collection\": { \"type\": \"string\", \"description\": \"Collection to create. Defaults to the configured one.\" },\n    \"dimensions\": { \"type\": \"integer\", \"minimum\": 1, \"description\": \"Vector width. Defaults to the configured embedding dimensions.\" },\n    \"distance\": { \"type\": \"string\", \"enum\": [\"Cosine\", \"Dot\", \"Euclid\"], \"description\": \"Distance metric (default Cosine).\" }\n  }\n}",
         "name": "rag_collection_ensure",
+        "runtime_ref": "rag-qdrant",
+        "secret_requirements": [
+          {
+            "format": "text",
+            "key": "rag-qdrant/qdrant_api_key",
+            "required": true
+          },
+          {
+            "format": "text",
+            "key": "rag-qdrant/embedding_api_key",
+            "required": true
+          }
+        ]
+      },
+      {
+        "capabilities": [
+          "flow",
+          "agentic_worker"
+        ],
+        "description": "Enumerate stored documents, grouped by doc_id, with pagination.",
+        "export": "greentic:extension-design/tools.invoke-tool",
+        "input_schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"limit\": { \"type\": \"integer\", \"minimum\": 1, \"description\": \"Max chunks to scan per page (default 50). Chunk counts in the response are only for chunks returned within this page.\" },\n    \"offset\": { \"description\": \"Opaque page cursor from a previous call's next_page_offset. Omit to start from the first page.\" },\n    \"filter\": { \"type\": \"object\", \"description\": \"A Qdrant filter object, passed through verbatim.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection.\" }\n  }\n}",
+        "name": "rag_list",
         "runtime_ref": "rag-qdrant",
         "secret_requirements": [
           {

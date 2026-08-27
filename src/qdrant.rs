@@ -27,6 +27,22 @@ pub struct Hit {
     pub payload: Value,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScrollPoint {
+    pub id: String,
+    pub payload: Value,
+}
+
+/// One page of the Scroll API. `next_page_offset` is `None` once there is
+/// nothing left to page through — callers surface it to the caller rather
+/// than looping here, so a large collection cannot be silently truncated by
+/// this extension deciding to stop early.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScrollPage {
+    pub points: Vec<ScrollPoint>,
+    pub next_page_offset: Option<Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeleteSelector {
     Ids(Vec<String>),
@@ -121,6 +137,38 @@ pub fn query_request(
     )
 }
 
+/// `with_vector: false` because listing is for enumeration, not retrieval —
+/// the vector is never used and would only inflate the response.
+#[must_use]
+pub fn scroll_request(
+    base: &str,
+    collection: &str,
+    limit: u32,
+    offset: Option<&Value>,
+    filter: Option<&Value>,
+    api_key: &str,
+) -> HttpRequest {
+    let mut body = serde_json::json!({
+        "limit": limit,
+        "with_payload": true,
+        "with_vector": false,
+    });
+    if let Some(map) = body.as_object_mut() {
+        if let Some(offset) = offset {
+            map.insert("offset".to_string(), offset.clone());
+        }
+        if let Some(filter) = filter {
+            map.insert("filter".to_string(), filter.clone());
+        }
+    }
+    request(
+        "POST",
+        format!("{base}/collections/{collection}/points/scroll"),
+        api_key,
+        &body,
+    )
+}
+
 #[must_use]
 pub fn delete_request(
     base: &str,
@@ -159,6 +207,16 @@ fn status_error(status: u16, body: &[u8]) -> Option<RagError> {
     }
 }
 
+/// Qdrant ids are integers or UUIDs; normalise both to a string so callers
+/// get one type. Shared by every parser that reads a `points[]` array.
+fn point_id(point: &Value) -> String {
+    match point.get("id") {
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    }
+}
+
 /// Parse the Query API envelope `{"result":{"points":[...]}}`.
 ///
 /// # Errors
@@ -180,13 +238,7 @@ pub fn parse_hits(status: u16, body: &[u8]) -> Result<Vec<Hit>, RagError> {
     Ok(points
         .iter()
         .map(|point| Hit {
-            // Qdrant ids are integers or UUIDs; normalise both to a string so
-            // callers get one type.
-            id: match point.get("id") {
-                Some(Value::String(s)) => s.clone(),
-                Some(other) => other.to_string(),
-                None => String::new(),
-            },
+            id: point_id(point),
             score: point
                 .get("score")
                 .and_then(Value::as_f64)
@@ -194,6 +246,49 @@ pub fn parse_hits(status: u16, body: &[u8]) -> Result<Vec<Hit>, RagError> {
             payload: point.get("payload").cloned().unwrap_or(Value::Null),
         })
         .collect())
+}
+
+/// Parse the Scroll API envelope
+/// `{"result":{"points":[...],"next_page_offset":...}}`.
+///
+/// A missing `next_page_offset` and an explicit JSON `null` both mean "no
+/// more pages" — Qdrant has used both across versions — so either collapses
+/// to `None` here rather than leaking that inconsistency to callers.
+///
+/// # Errors
+/// See [`status_error`]; a 2xx body that is not the expected shape is
+/// [`RagError::Internal`].
+pub fn parse_scroll(status: u16, body: &[u8]) -> Result<ScrollPage, RagError> {
+    if let Some(err) = status_error(status, body) {
+        return Err(err);
+    }
+    let parsed: Value = serde_json::from_slice(body)
+        .map_err(|e| RagError::Internal(format!("Qdrant response is not JSON: {e}")))?;
+
+    let result = parsed
+        .get("result")
+        .ok_or_else(|| RagError::Internal("Qdrant response has no result".to_string()))?;
+
+    let points = result
+        .get("points")
+        .and_then(Value::as_array)
+        .ok_or_else(|| RagError::Internal("Qdrant response has no result.points".to_string()))?
+        .iter()
+        .map(|point| ScrollPoint {
+            id: point_id(point),
+            payload: point.get("payload").cloned().unwrap_or(Value::Null),
+        })
+        .collect();
+
+    let next_page_offset = result
+        .get("next_page_offset")
+        .cloned()
+        .filter(|v| !v.is_null());
+
+    Ok(ScrollPage {
+        points,
+        next_page_offset,
+    })
 }
 
 /// Accept any 2xx for write operations.
@@ -250,6 +345,7 @@ mod tests {
             upsert_request(BASE, "kb", &[], "k"),
             query_request(BASE, "kb", &[0.1], 5, None, "k"),
             delete_request(BASE, "kb", &DeleteSelector::DocId("d".into()), "k"),
+            scroll_request(BASE, "kb", 50, None, None, "k"),
         ];
         for req in &reqs {
             assert!(
@@ -332,6 +428,89 @@ mod tests {
             "https://c.qdrant.io:6333/collections/kb/points/delete?wait=true"
         );
         assert_eq!(body_of(&req)["points"], serde_json::json!(["a", "b"]));
+    }
+
+    #[test]
+    fn scroll_asks_for_payload_but_not_vectors() {
+        let req = scroll_request(BASE, "kb", 25, None, None, "k");
+        assert_eq!(req.method, "POST");
+        assert_eq!(
+            req.url,
+            "https://c.qdrant.io:6333/collections/kb/points/scroll"
+        );
+        let body = body_of(&req);
+        assert_eq!(body["limit"], 25);
+        assert_eq!(body["with_payload"], true);
+        assert_eq!(body["with_vector"], false);
+        assert!(body.get("offset").is_none());
+        assert!(body.get("filter").is_none());
+    }
+
+    #[test]
+    fn scroll_forwards_an_offset_and_a_filter_when_given() {
+        let offset = serde_json::json!("3f2504e0-4f89-41d3-9a0c-0305e82c3301");
+        let filter = serde_json::json!({"must":[{"key":"doc_id","match":{"value":"d1"}}]});
+        let req = scroll_request(BASE, "kb", 10, Some(&offset), Some(&filter), "k");
+        let body = body_of(&req);
+        assert_eq!(body["offset"], offset);
+        assert_eq!(body["filter"], filter);
+    }
+
+    #[test]
+    fn scroll_hits_are_grouped_by_nothing_at_the_parser_level() {
+        // Grouping by doc_id is ops::list's job; parse_scroll only normalises
+        // the wire shape into flat points, one per chunk.
+        let body = br#"{"result":{"points":[
+            {"id":"p1","payload":{"doc_id":"d1","chunk_index":0}},
+            {"id":"p2","payload":{"doc_id":"d1","chunk_index":1}}
+        ],"next_page_offset":null}}"#;
+        let page = parse_scroll(200, body).unwrap();
+        assert_eq!(page.points.len(), 2);
+        assert_eq!(page.points[0].id, "p1");
+        assert_eq!(page.points[0].payload["doc_id"], "d1");
+        assert!(page.next_page_offset.is_none());
+    }
+
+    #[test]
+    fn a_present_next_page_offset_is_surfaced() {
+        let body = br#"{"result":{"points":[],"next_page_offset":"3f2504e0-4f89-41d3-9a0c-0305e82c3301"}}"#;
+        let page = parse_scroll(200, body).unwrap();
+        assert_eq!(
+            page.next_page_offset,
+            Some(serde_json::json!("3f2504e0-4f89-41d3-9a0c-0305e82c3301"))
+        );
+    }
+
+    #[test]
+    fn a_null_next_page_offset_means_no_more_pages() {
+        let body = br#"{"result":{"points":[],"next_page_offset":null}}"#;
+        assert!(parse_scroll(200, body).unwrap().next_page_offset.is_none());
+    }
+
+    #[test]
+    fn a_missing_next_page_offset_also_means_no_more_pages() {
+        let body = br#"{"result":{"points":[]}}"#;
+        assert!(parse_scroll(200, body).unwrap().next_page_offset.is_none());
+    }
+
+    #[test]
+    fn an_empty_collection_scrolls_to_an_empty_page() {
+        let body = br#"{"result":{"points":[],"next_page_offset":null}}"#;
+        let page = parse_scroll(200, body).unwrap();
+        assert!(page.points.is_empty());
+        assert!(page.next_page_offset.is_none());
+    }
+
+    #[test]
+    fn scroll_status_codes_map_onto_distinct_errors() {
+        assert!(matches!(
+            parse_scroll(401, b"nope").unwrap_err(),
+            RagError::PermissionDenied(_)
+        ));
+        assert!(matches!(
+            parse_scroll(404, b"missing").unwrap_err(),
+            RagError::NotFound(_)
+        ));
     }
 
     #[test]

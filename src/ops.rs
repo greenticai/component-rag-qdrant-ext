@@ -8,10 +8,10 @@ use crate::config::Config;
 use crate::embed::{embed_request, parse_embed_response};
 use crate::error::RagError;
 use crate::host::{HostCalls, HttpRequest, HttpResponse};
-use crate::input::{DeleteInput, EnsureInput, IngestInput, SearchInput, UpsertInput};
+use crate::input::{DeleteInput, EnsureInput, IngestInput, ListInput, SearchInput, UpsertInput};
 use crate::qdrant::{
     DeleteSelector, Point, chunk_point_id, delete_request, ensure_collection_request, parse_ack,
-    parse_ensure_ack, parse_hits, query_request, upsert_request,
+    parse_ensure_ack, parse_hits, parse_scroll, query_request, scroll_request, upsert_request,
 };
 
 /// Secret URIs. These must match `runtime.permissions.secrets` in describe.json
@@ -319,6 +319,92 @@ pub fn ensure_collection<H: HostCalls>(
     }))
 }
 
+/// A payload's `doc_id`, `chunk_index` and `text` are chunk artifacts written
+/// by `ingest` (see the payload assembly there), not part of the caller's
+/// original metadata. Stripping them back out recovers exactly the object the
+/// caller passed as `metadata` at ingest time. A non-object payload (should
+/// not happen — `upsert` and `ingest` both reject one before writing) is
+/// returned unchanged rather than discarded.
+fn strip_chunk_fields(payload: &Value) -> Value {
+    let Some(map) = payload.as_object() else {
+        return payload.clone();
+    };
+    let mut metadata = map.clone();
+    metadata.remove("doc_id");
+    metadata.remove("chunk_index");
+    metadata.remove("text");
+    Value::Object(metadata)
+}
+
+/// Enumerate stored documents, one Qdrant scroll page at a time, grouped by
+/// `doc_id` rather than by chunk.
+///
+/// A chunk count is only for the chunks that landed in *this* page — a
+/// document whose chunks straddle a page boundary shows a partial count on
+/// each page it appears in. That is the honest answer to "how many chunks on
+/// this page", not "how many chunks does this document have in total";
+/// getting the total would mean looping every page inside the tool, which is
+/// the truncation-by-silence failure mode this tool exists to avoid.
+///
+/// A point with no `doc_id` in its payload — `upsert` does not require one —
+/// is grouped under its own point id, so it still shows up as a one-chunk
+/// entry instead of disappearing from the listing.
+///
+/// # Errors
+/// Propagates secret, transport and Qdrant errors.
+pub fn list<H: HostCalls>(host: &H, cfg: &Config, input: &ListInput) -> Result<Value, RagError> {
+    let key = secret(host, QDRANT_KEY_REF)?;
+    let req = scroll_request(
+        &cfg.qdrant_url,
+        collection_of(cfg, input.collection.as_ref()),
+        input.limit,
+        input.offset.as_ref(),
+        input.filter.as_ref(),
+        &key,
+    );
+    let resp = send(host, &req)?;
+    let page = parse_scroll(resp.status, &resp.body)?;
+
+    let mut order: Vec<String> = Vec::new();
+    let mut by_doc: std::collections::HashMap<String, (u32, Value)> =
+        std::collections::HashMap::new();
+    for point in page.points {
+        let doc_id = point
+            .payload
+            .get("doc_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or(point.id);
+        match by_doc.get_mut(&doc_id) {
+            Some((chunk_count, _)) => *chunk_count += 1,
+            None => {
+                order.push(doc_id.clone());
+                by_doc.insert(doc_id, (1, strip_chunk_fields(&point.payload)));
+            }
+        }
+    }
+
+    let documents: Vec<Value> = order
+        .into_iter()
+        .filter_map(|doc_id| {
+            by_doc.remove(&doc_id).map(|(chunk_count, metadata)| {
+                serde_json::json!({
+                    "doc_id": doc_id,
+                    "chunk_count": chunk_count,
+                    "metadata": metadata,
+                })
+            })
+        })
+        .collect();
+
+    let mut out = serde_json::Map::new();
+    out.insert("documents".to_string(), Value::Array(documents));
+    if let Some(next_page_offset) = page.next_page_offset {
+        out.insert("next_page_offset".to_string(), next_page_offset);
+    }
+    Ok(Value::Object(out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,5 +684,128 @@ mod tests {
             crate::input::parse_search(r#"{"vector":[0.1,0.2,0.3],"collection":"other"}"#).unwrap();
         search(&host, &cfg(), &input).unwrap();
         assert!(host.http.calls()[0].url.contains("/collections/other/"));
+    }
+
+    /// A host with only the Qdrant secret set, whose scroll endpoint returns
+    /// `scroll_response` for `collection`. `rag_list` never embeds, so unlike
+    /// `happy_host` there is no embeddings-endpoint expectation to satisfy.
+    fn list_host(scroll_response: CannedResponse, collection: &str) -> TestHost {
+        let http = MockHttpClient::new();
+        let secrets = MockSecretsBackend::new();
+        secrets.set(QDRANT_KEY_REF, "qk");
+        http.expect(
+            "POST",
+            &format!("{BASE}/collections/{collection}/points/scroll"),
+            scroll_response,
+        );
+        TestHost { http, secrets }
+    }
+
+    #[test]
+    fn list_groups_several_chunks_of_two_documents_into_two_entries() {
+        let body = serde_json::json!({
+            "result": {
+                "points": [
+                    {"id": "p1", "payload": {"doc_id": "d1", "chunk_index": 0, "text": "a"}},
+                    {"id": "p2", "payload": {"doc_id": "d1", "chunk_index": 1, "text": "b"}},
+                    {"id": "p3", "payload": {"doc_id": "d2", "chunk_index": 0, "text": "c", "lang": "id"}},
+                ],
+                "next_page_offset": null,
+            }
+        })
+        .to_string();
+        let host = list_host(ok(&body), "kb");
+        let input = crate::input::parse_list(r#"{}"#).unwrap();
+        let out = list(&host, &cfg(), &input).unwrap();
+
+        let docs = out["documents"].as_array().unwrap();
+        assert_eq!(docs.len(), 2, "two doc_ids must collapse to two entries");
+
+        let d1 = docs.iter().find(|d| d["doc_id"] == "d1").unwrap();
+        assert_eq!(d1["chunk_count"], 2);
+
+        let d2 = docs.iter().find(|d| d["doc_id"] == "d2").unwrap();
+        assert_eq!(d2["chunk_count"], 1);
+        assert_eq!(d2["metadata"]["lang"], "id");
+        // Chunk artifacts must not leak into the reported metadata.
+        assert!(d2["metadata"].get("text").is_none());
+        assert!(d2["metadata"].get("chunk_index").is_none());
+        assert!(d2["metadata"].get("doc_id").is_none());
+    }
+
+    #[test]
+    fn list_groups_a_point_with_no_doc_id_under_its_own_point_id() {
+        // rag_upsert does not require a doc_id, so a point written that way
+        // must still show up as a one-chunk entry, not vanish from the list.
+        let body = serde_json::json!({
+            "result": {
+                "points": [{"id": "p1", "payload": {"lang": "id"}}],
+                "next_page_offset": null,
+            }
+        })
+        .to_string();
+        let host = list_host(ok(&body), "kb");
+        let input = crate::input::parse_list(r#"{}"#).unwrap();
+        let out = list(&host, &cfg(), &input).unwrap();
+
+        let docs = out["documents"].as_array().unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0]["doc_id"], "p1");
+        assert_eq!(docs[0]["chunk_count"], 1);
+    }
+
+    #[test]
+    fn list_surfaces_the_pagination_offset_when_qdrant_returns_one() {
+        let body = serde_json::json!({
+            "result": {
+                "points": [],
+                "next_page_offset": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            }
+        })
+        .to_string();
+        let host = list_host(ok(&body), "kb");
+        let input = crate::input::parse_list(r#"{}"#).unwrap();
+        let out = list(&host, &cfg(), &input).unwrap();
+        assert_eq!(
+            out["next_page_offset"],
+            "3f2504e0-4f89-41d3-9a0c-0305e82c3301"
+        );
+    }
+
+    #[test]
+    fn list_omits_the_pagination_offset_key_entirely_when_qdrant_has_no_more_pages() {
+        let body =
+            serde_json::json!({"result": {"points": [], "next_page_offset": null}}).to_string();
+        let host = list_host(ok(&body), "kb");
+        let input = crate::input::parse_list(r#"{}"#).unwrap();
+        let out = list(&host, &cfg(), &input).unwrap();
+        assert!(
+            out.as_object().unwrap().get("next_page_offset").is_none(),
+            "next_page_offset must be absent, not null, once pages are exhausted: {out}"
+        );
+    }
+
+    #[test]
+    fn list_on_an_empty_collection_returns_an_empty_list_not_an_error() {
+        let body =
+            serde_json::json!({"result": {"points": [], "next_page_offset": null}}).to_string();
+        let host = list_host(ok(&body), "kb");
+        let input = crate::input::parse_list(r#"{}"#).unwrap();
+        let out = list(&host, &cfg(), &input).unwrap();
+        assert_eq!(out["documents"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn list_collection_override_reaches_the_request_url() {
+        let body =
+            serde_json::json!({"result": {"points": [], "next_page_offset": null}}).to_string();
+        let host = list_host(ok(&body), "other");
+        let input = crate::input::parse_list(r#"{"collection":"other"}"#).unwrap();
+        list(&host, &cfg(), &input).unwrap();
+        assert!(
+            host.http.calls()[0]
+                .url
+                .contains("/collections/other/points/scroll")
+        );
     }
 }

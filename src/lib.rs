@@ -1,7 +1,7 @@
 //! Greentic RAG/Qdrant design extension — WIT export layer.
 //!
-//! Exports five tools (`rag_search`, `rag_upsert`, `rag_ingest`, `rag_delete`,
-//! `rag_collection_ensure`) via `greentic:extension-design/tools`. Every piece of
+//! Exports six tools (`rag_search`, `rag_upsert`, `rag_ingest`, `rag_delete`,
+//! `rag_collection_ensure`, `rag_list`) via `greentic:extension-design/tools`. Every piece of
 //! logic lives in the pure modules below; this file is the only one that may
 //! touch `bindings`, because a host `cargo test` that reaches a WIT import
 //! aborts the process outright.
@@ -147,6 +147,10 @@ fn dispatch(name: &str, args_json: &str) -> Result<String, RagError> {
             let input = input::parse_ensure(args_json)?;
             ops::ensure_collection(&host, config::current()?, &input)?
         }
+        tool_meta::LIST_TOOL => {
+            let input = input::parse_list(args_json)?;
+            ops::list(&host, config::current()?, &input)?
+        }
         other => return Err(RagError::InvalidInput(format!("unknown tool: {other}"))),
     };
     serde_json::to_string(&value)
@@ -208,9 +212,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_five_tools_reach_the_wit_layer_with_their_metadata_intact() {
+    fn the_six_tools_reach_the_wit_layer_with_their_metadata_intact() {
         let listed = <Component as tools::Guest>::list_tools();
-        assert_eq!(listed.len(), 5);
+        assert_eq!(listed.len(), 6);
         for tool in &listed {
             assert!(
                 tool.agentic_worker_metadata.is_some(),
