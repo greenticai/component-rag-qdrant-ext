@@ -8,6 +8,7 @@
 #![allow(clippy::used_underscore_items)]
 
 #[allow(warnings)]
+#[rustfmt::skip]
 pub mod bindings;
 
 pub mod chunk;
