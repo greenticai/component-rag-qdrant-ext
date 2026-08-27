@@ -382,15 +382,6 @@
     return out;
   }
 
-  function applyTiffPredictor(data, colors, bpc, columns) {
-    if (bpc !== 8) return data; // only the common case is worth supporting
-    var rowLen = colors * columns;
-    for (var r = 0; r + rowLen <= data.length; r += rowLen) {
-      for (var i = colors; i < rowLen; i++) data[r + i] = (data[r + i] + data[r + i - colors]) & 0xff;
-    }
-    return data;
-  }
-
   function maybeUnpredict(doc, data, pm) {
     if (!pm) return data;
     var predictor = doc.resolve(pm.get('Predictor')) || 1;
@@ -398,16 +389,15 @@
     var colors = doc.resolve(pm.get('Colors')) || 1;
     var bpc = doc.resolve(pm.get('BitsPerComponent')) || 8;
     var columns = doc.resolve(pm.get('Columns')) || 1;
-    if (predictor >= 10) return applyPngPredictor(data, colors, bpc, columns);
-    if (predictor === 2) return applyTiffPredictor(data, colors, bpc, columns);
-    return data;
+    // Only PNG predictors (>= 10) occur on the xref/objstm streams we read.
+    return predictor >= 10 ? applyPngPredictor(data, colors, bpc, columns) : data;
   }
 
   /**
-   * Decode a stream through its whole /Filter chain. Returns { data } or
+   * Decode a stream through its whole /Filter chain: { data } or
    * { unsupported: name } — never partial output presented as complete.
-   * DCT/JPX/JBIG2/CCITT are images; LZW and RunLength are rare enough in
-   * modern text PDFs that warning beats a hand-rolled decoder.
+   * DCT/JPX/JBIG2/CCITT are images; LZW/RunLength are rare in modern text
+   * PDFs, so warning beats hand-rolling a decoder for them.
    */
   async function decodeStream(doc, stream, warnings, label) {
     var data = stream.raw;
@@ -559,10 +549,10 @@
   };
 
   /**
-   * Belt and braces: a `/Encrypt N G R` entry sitting in plainly-ASCII
-   * surroundings (i.e. not inside a compressed binary stream). Erring toward
-   * "encrypted" is right — decryption is out of scope, and emitting
-   * ciphertext-derived mojibake would be much worse than refusing.
+   * Belt and braces: a `/Encrypt N G R` in plainly-ASCII surroundings (i.e.
+   * not inside a compressed stream). Erring toward "encrypted" is right —
+   * decryption is out of scope, and emitting ciphertext-derived mojibake
+   * would be far worse than refusing.
    */
   PdfDoc.prototype.scanEncryptFallback = function () {
     var re = /\/Encrypt\s+\d+\s+\d+\s+R/g, m;
@@ -728,15 +718,22 @@
     return t;
   })();
 
-  /** WinAnsi (CP1252) 0x80-0x9F; the rest of its high range is plain Latin-1. */
-  var WINANSI_HIGH = '€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ';
+  /**
+   * WinAnsi (CP1252) codes 0x80-0x9F; the rest of its high range is plain
+   * Latin-1. The five unassigned slots are written as escapes on purpose —
+   * as literal control characters they are invisible and get silently lost
+   * when the table is reflowed, which shifts every glyph after them.
+   */
+  var WINANSI_HIGH =
+    '\u20AC\u0081\u201A\u0192\u201E\u2026\u2020\u2021\u02C6\u2030\u0160\u2039\u0152\u008D\u017D\u008F' +
+    '\u0090\u2018\u2019\u201C\u201D\u2022\u2013\u2014\u02DC\u2122\u0161\u203A\u0153\u009D\u017E\u0178';
 
-  /** MacRomanEncoding, codes 0x80-0xFF. */
+  /** MacRomanEncoding, codes 0x80-0xFF (exactly 128 entries). */
   var MACROMAN_HIGH =
     'ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü' +
     '†°¢£§•¶ß®©™´¨≠ÆØ∞±≤≥¥µ∂∑∏π∫ªºΩæø' +
-    '¿¡¬√ƒ≈∆«»… ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ' +
-    '‡·‚„‰ÂÊÁËÈÍÎÏÌÓÔÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ';
+    '¿¡¬√ƒ≈∆«»…\u00A0ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ' +
+    '‡·‚„‰ÂÊÁËÈÍÎÏÌÓÔ\uF8FFÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ';
 
   /** StandardEncoding high range (sparse), as code/codepoint hex pairs. */
   var STANDARD_HIGH = (function () {
@@ -825,9 +822,9 @@
   }
 
   /**
-   * Parse a /ToUnicode CMap: begincodespacerange (tells us the code width),
-   * beginbfchar and beginbfrange (including the array form and multi-unit
-   * UTF-16BE destinations, i.e. ligatures). This is the only fully reliable
+   * Parse a /ToUnicode CMap: begincodespacerange (which gives the code
+   * width), beginbfchar and beginbfrange (array form and multi-unit UTF-16BE
+   * destinations, i.e. ligatures, included). The only fully reliable
    * glyph->Unicode source in a PDF, so it outranks every other mapping.
    */
   function parseToUnicodeCMap(data) {
