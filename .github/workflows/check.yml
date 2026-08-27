@@ -41,10 +41,13 @@ jobs:
       - name: Install gtdx
         run: cargo binstall greentic-extension-sdk-cli --version "$GTDX_VERSION" --no-confirm
 
-      # Runs what ci/local_check.sh runs: generate src/bindings.rs (gitignored,
-      # required by `mod bindings;`, absent on a fresh checkout), fmt --check
-      # (tolerating wit-bindgen's own formatting of the generated bindings
-      # file), clippy -D warnings, cargo test, and the release component build.
+      # Runs what ci/local_check.sh runs: `cargo component bindings`
+      # regenerates the gitignored src/bindings.rs that `mod bindings;`
+      # needs and a fresh checkout lacks, then `cargo fmt --all -- --check`
+      # checks every file — the generated one is excluded by the
+      # `#[rustfmt::skip]` on its module declaration, not by filtering
+      # fmt's output — followed by clippy -D warnings, cargo test, and the
+      # release component build.
       - name: cargo fmt + clippy + test + component build
         run: ./ci/local_check.sh
 
