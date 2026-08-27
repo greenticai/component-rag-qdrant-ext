@@ -1,4 +1,5 @@
 {
   "extension.name": "RAG (Qdrant)",
-  "extension.description": "Semantic search, ingestion, deletion and listing over a Qdrant vector collection, exposed as six tools to flow nodes and the agentic worker."
+  "extension.description": "Semantic search, ingestion, deletion and listing over a Qdrant vector collection, exposed as six tools to flow nodes and the agentic worker.",
+  "view.knowledge.label": "Knowledge base"
 }

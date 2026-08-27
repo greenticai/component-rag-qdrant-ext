@@ -40,11 +40,11 @@
       "rag-qdrant": {
         "gtpack": {
           "file": "extension.wasm",
-          "sha256": "a1bd420be529d00efc25df366fa66d9590f53c3b6b6e5c9961513256e8ef914a",
+          "sha256": "d0ab659f81a1fcc524ed3d2a4e659d9d4872662b9c6097f7273fc790b6811dc0",
           "pack_id": "greentic.rag-qdrant",
           "component_version": "0.2.0"
         },
-        "sha256": "a1bd420be529d00efc25df366fa66d9590f53c3b6b6e5c9961513256e8ef914a",
+        "sha256": "d0ab659f81a1fcc524ed3d2a4e659d9d4872662b9c6097f7273fc790b6811dc0",
         "world": "greentic:rag-qdrant/extension@1.0.0"
       }
     },
@@ -58,7 +58,11 @@
         "secret://rag-qdrant/qdrant_api_key",
         "secret://rag-qdrant/embedding_api_key"
       ],
-      "callExtensionKinds": []
+      "callExtensionKinds": [],
+      "ui": {
+        "fetchHosts": [],
+        "platformApi": []
+      }
     }
   },
   "requiredSecrets": [
@@ -84,7 +88,7 @@
         ],
         "description": "Semantic search over the Qdrant knowledge base.",
         "export": "greentic:extension-design/tools.invoke-tool",
-        "input_schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"query\": { \"type\": \"string\", \"description\": \"Text to search for. Pass this OR vector, not both.\" },\n    \"vector\": { \"type\": \"array\", \"items\": { \"type\": \"number\" }, \"description\": \"A pre-computed embedding. Pass this OR query, not both.\" },\n    \"top_k\": { \"type\": \"integer\", \"minimum\": 1, \"description\": \"How many results to return (default 5).\" },\n    \"filter\": { \"type\": \"object\", \"description\": \"A Qdrant filter object, passed through verbatim.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection.\" }\n  },\n  \"oneOf\": [\n    { \"required\": [\"query\"],  \"not\": { \"required\": [\"vector\"] } },\n    { \"required\": [\"vector\"], \"not\": { \"required\": [\"query\"] } }\n  ]\n}",
+        "input_schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"query\": { \"type\": \"string\", \"description\": \"Text to search for. Pass this OR vector, not both.\" },\n    \"vector\": { \"type\": \"array\", \"items\": { \"type\": \"number\" }, \"description\": \"A pre-computed embedding. Pass this OR query, not both.\" },\n    \"top_k\": { \"type\": \"integer\", \"minimum\": 1, \"description\": \"How many results to return (default 5).\" },\n    \"filter\": { \"type\": \"object\", \"description\": \"A Qdrant filter object, passed through verbatim.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection. Rejected when the host supplies a per-tenant collection for the caller \\u2014 in a multi-tenant install the collection is chosen by tenant configuration, not per call.\" }\n  },\n  \"oneOf\": [\n    { \"required\": [\"query\"],  \"not\": { \"required\": [\"vector\"] } },\n    { \"required\": [\"vector\"], \"not\": { \"required\": [\"query\"] } }\n  ]\n}",
         "name": "rag_search",
         "runtime_ref": "rag-qdrant",
         "secret_requirements": [
@@ -107,7 +111,7 @@
         ],
         "description": "Store or replace a single point by id.",
         "export": "greentic:extension-design/tools.invoke-tool",
-        "input_schema": "{\n  \"type\": \"object\",\n  \"required\": [\"id\"],\n  \"properties\": {\n    \"id\": { \"type\": \"string\", \"description\": \"Point id. Must be an unsigned integer or a UUID.\" },\n    \"text\": { \"type\": \"string\", \"description\": \"Text to embed and store. Pass this OR vector, not both.\" },\n    \"vector\": { \"type\": \"array\", \"items\": { \"type\": \"number\" }, \"description\": \"A pre-computed embedding. Pass this OR text, not both.\" },\n    \"payload\": { \"type\": \"object\", \"description\": \"Arbitrary metadata stored alongside the point.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection.\" }\n  },\n  \"oneOf\": [\n    { \"required\": [\"text\"],   \"not\": { \"required\": [\"vector\"] } },\n    { \"required\": [\"vector\"], \"not\": { \"required\": [\"text\"] } }\n  ]\n}",
+        "input_schema": "{\n  \"type\": \"object\",\n  \"required\": [\"id\"],\n  \"properties\": {\n    \"id\": { \"type\": \"string\", \"description\": \"Point id. Must be an unsigned integer or a UUID.\" },\n    \"text\": { \"type\": \"string\", \"description\": \"Text to embed and store. Pass this OR vector, not both.\" },\n    \"vector\": { \"type\": \"array\", \"items\": { \"type\": \"number\" }, \"description\": \"A pre-computed embedding. Pass this OR text, not both.\" },\n    \"payload\": { \"type\": \"object\", \"description\": \"Arbitrary metadata stored alongside the point.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection. Rejected when the host supplies a per-tenant collection for the caller \\u2014 in a multi-tenant install the collection is chosen by tenant configuration, not per call.\" }\n  },\n  \"oneOf\": [\n    { \"required\": [\"text\"],   \"not\": { \"required\": [\"vector\"] } },\n    { \"required\": [\"vector\"], \"not\": { \"required\": [\"text\"] } }\n  ]\n}",
         "name": "rag_upsert",
         "runtime_ref": "rag-qdrant",
         "secret_requirements": [
@@ -130,7 +134,7 @@
         ],
         "description": "Chunk, embed and store a whole document under a doc_id.",
         "export": "greentic:extension-design/tools.invoke-tool",
-        "input_schema": "{\n  \"type\": \"object\",\n  \"required\": [\"doc_id\", \"text\"],\n  \"properties\": {\n    \"doc_id\": { \"type\": \"string\", \"description\": \"Stable document identifier. Re-ingesting the same doc_id replaces its chunks.\" },\n    \"text\": { \"type\": \"string\", \"description\": \"Full document text. It is chunked, embedded and stored.\" },\n    \"metadata\": { \"type\": \"object\", \"description\": \"Metadata copied onto every chunk of this document.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection.\" }\n  }\n}",
+        "input_schema": "{\n  \"type\": \"object\",\n  \"required\": [\"doc_id\", \"text\"],\n  \"properties\": {\n    \"doc_id\": { \"type\": \"string\", \"description\": \"Stable document identifier. Re-ingesting the same doc_id replaces its chunks.\" },\n    \"text\": { \"type\": \"string\", \"description\": \"Full document text. It is chunked, embedded and stored.\" },\n    \"metadata\": { \"type\": \"object\", \"description\": \"Metadata copied onto every chunk of this document.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection. Rejected when the host supplies a per-tenant collection for the caller \\u2014 in a multi-tenant install the collection is chosen by tenant configuration, not per call.\" }\n  }\n}",
         "name": "rag_ingest",
         "runtime_ref": "rag-qdrant",
         "secret_requirements": [
@@ -153,7 +157,7 @@
         ],
         "description": "Delete points by id, or every chunk of one document.",
         "export": "greentic:extension-design/tools.invoke-tool",
-        "input_schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"ids\": { \"type\": \"array\", \"items\": { \"type\": \"string\" }, \"description\": \"Point ids to delete. Pass this OR doc_id, not both.\" },\n    \"doc_id\": { \"type\": \"string\", \"description\": \"Delete every chunk of this document. Pass this OR ids, not both.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection.\" }\n  },\n  \"oneOf\": [\n    { \"required\": [\"ids\"],    \"not\": { \"required\": [\"doc_id\"] } },\n    { \"required\": [\"doc_id\"], \"not\": { \"required\": [\"ids\"] } }\n  ]\n}",
+        "input_schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"ids\": { \"type\": \"array\", \"items\": { \"type\": \"string\" }, \"description\": \"Point ids to delete. Pass this OR doc_id, not both.\" },\n    \"doc_id\": { \"type\": \"string\", \"description\": \"Delete every chunk of this document. Pass this OR ids, not both.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection. Rejected when the host supplies a per-tenant collection for the caller \\u2014 in a multi-tenant install the collection is chosen by tenant configuration, not per call.\" }\n  },\n  \"oneOf\": [\n    { \"required\": [\"ids\"],    \"not\": { \"required\": [\"doc_id\"] } },\n    { \"required\": [\"doc_id\"], \"not\": { \"required\": [\"ids\"] } }\n  ]\n}",
         "name": "rag_delete",
         "runtime_ref": "rag-qdrant",
         "secret_requirements": [
@@ -176,7 +180,7 @@
         ],
         "description": "Create the collection if absent, with a fixed vector width and metric.",
         "export": "greentic:extension-design/tools.invoke-tool",
-        "input_schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"collection\": { \"type\": \"string\", \"description\": \"Collection to create. Defaults to the configured one.\" },\n    \"dimensions\": { \"type\": \"integer\", \"minimum\": 1, \"description\": \"Vector width. Defaults to the configured embedding dimensions.\" },\n    \"distance\": { \"type\": \"string\", \"enum\": [\"Cosine\", \"Dot\", \"Euclid\"], \"description\": \"Distance metric (default Cosine).\" }\n  }\n}",
+        "input_schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"collection\": { \"type\": \"string\", \"description\": \"Collection to create. Defaults to the configured one. Rejected when the host supplies a per-tenant collection for the caller.\" },\n    \"dimensions\": { \"type\": \"integer\", \"minimum\": 1, \"description\": \"Vector width. Defaults to the configured embedding dimensions.\" },\n    \"distance\": { \"type\": \"string\", \"enum\": [\"Cosine\", \"Dot\", \"Euclid\"], \"description\": \"Distance metric (default Cosine).\" }\n  }\n}",
         "name": "rag_collection_ensure",
         "runtime_ref": "rag-qdrant",
         "secret_requirements": [
@@ -199,7 +203,7 @@
         ],
         "description": "Enumerate stored documents, grouped by doc_id, with pagination.",
         "export": "greentic:extension-design/tools.invoke-tool",
-        "input_schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"limit\": { \"type\": \"integer\", \"minimum\": 1, \"description\": \"Max chunks to scan per page (default 50). Chunk counts in the response are only for chunks returned within this page.\" },\n    \"offset\": { \"description\": \"Opaque page cursor from a previous call's next_page_offset. Omit to start from the first page.\" },\n    \"filter\": { \"type\": \"object\", \"description\": \"A Qdrant filter object, passed through verbatim.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection.\" }\n  }\n}",
+        "input_schema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"limit\": { \"type\": \"integer\", \"minimum\": 1, \"description\": \"Max chunks to scan per page (default 50). Chunk counts in the response are only for chunks returned within this page.\" },\n    \"offset\": { \"description\": \"Opaque page cursor from a previous call's next_page_offset. Omit to start from the first page.\" },\n    \"filter\": { \"type\": \"object\", \"description\": \"A Qdrant filter object, passed through verbatim.\" },\n    \"collection\": { \"type\": \"string\", \"description\": \"Override the configured default collection. Rejected when the host supplies a per-tenant collection for the caller \\u2014 in a multi-tenant install the collection is chosen by tenant configuration, not per call.\" }\n  }\n}",
         "name": "rag_list",
         "runtime_ref": "rag-qdrant",
         "secret_requirements": [
@@ -213,6 +217,44 @@
             "key": "rag-qdrant/embedding_api_key",
             "required": true
           }
+        ]
+      }
+    ],
+    "views": [
+      {
+        "id": "knowledge",
+        "surface": "designer",
+        "title_key": "view.knowledge.label",
+        "title_fallback": "Knowledge base",
+        "entry": "index.html",
+        "placement": {
+          "slot": "designer.sidebar",
+          "order": 20
+        },
+        "min_visibility": "member",
+        "tools": [
+          "rag_list",
+          "rag_ingest",
+          "rag_delete",
+          "rag_search"
+        ]
+      },
+      {
+        "id": "knowledge-admin",
+        "surface": "admin",
+        "title_key": "view.knowledge.label",
+        "title_fallback": "Knowledge base",
+        "entry": "index.html",
+        "placement": {
+          "slot": "admin.sidebar",
+          "order": 20
+        },
+        "min_visibility": "tenant_admin",
+        "tools": [
+          "rag_list",
+          "rag_ingest",
+          "rag_delete",
+          "rag_search"
         ]
       }
     ]

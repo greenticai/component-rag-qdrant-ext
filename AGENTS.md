@@ -45,6 +45,11 @@ repository. This is a Greentic Designer **design** extension scaffolded by
 - `src/config.rs`         — operator configuration, parsed once in `lifecycle::init`.
 - `src/error.rs`          — the extension's own error type; only `lib.rs` maps
   it onto the WIT `extension-error`, so no other module needs bindings.
+- `assets/views/knowledge/` — the contributed view (see below). Browser code,
+  not Rust: `index.html`, `style.css`, `app.js`, `pdf.js` (a dependency-free
+  PDF text extractor) and `bridge.js`.
+- `assets/views/knowledge-admin/` — a byte-identical copy of the above, serving
+  the Admin surface. Edit both, or the build fails; see below.
 - `wit/`                 — WIT contract, vendored by `gtdx new` (see `.gtdx-contract.lock`)
 - `i18n/en.json`         — user-facing strings
 - `build.sh`             — compile the wasm
@@ -122,6 +127,15 @@ They are ordinary in-memory objects (`MockHttpClient`, `MockSecretsBackend`,
 parameter rather than calling the binding directly. Structure it that way and
 the logic stays testable on the host.
 
+**`cargo test` does not cover `assets/views/knowledge/`.** That code is browser
+JavaScript; nothing in the Rust gate loads it, so a green `ci/local_check.sh`
+says nothing about the view. Exercising it means a host: serve the directory and
+embed `index.html` in an `<iframe sandbox="allow-scripts">` (no
+`allow-same-origin` — the opaque origin is the whole point) from a page that
+speaks the v1 `postMessage` protocol in `bridge.js` and answers `invokeTool`
+with canned tool results. `gtdx lint` and `gtdx validate` still run in the gate
+below and do catch the manifest-level mistakes.
+
 ## Self-check before publishing
 
 Beyond the Rust gate above, validate the manifest with gtdx — these catch a broken
@@ -158,6 +172,68 @@ is no leftover scaffold value to hunt down:
 
 If you're using this repo as a reference for a new extension, the pattern to
 copy is the pure/host-boundary module split in Layout above, not this list.
+
+## The contributed view (`assets/views/knowledge/`)
+
+`contributions.views[]` declares **two** entries for one page — `knowledge`
+(Designer) and `knowledge-admin` (Admin) — for curating the knowledge base:
+list, upload, delete, search.
+
+**Change the page in both directories.** `Surface` is single-valued and view
+ids must be unique, so both hosts need their own entry; `gtdx lint` resolves
+`entry` under `assets/views/<view id>/` and forbids `..`, so each id needs its
+own real directory. Do **not** try to share one with a symlink: lint follows it
+and passes, the packer copies only real files, and the pack then ships nothing
+under that id — lint clean, install broken. The two copies must stay
+byte-identical, and
+`view_asset_tests::the_designer_and_admin_copies_of_the_view_are_identical`
+fails the build if they drift. If the page ever needs to behave differently per
+host, branch on `surface` from the host's `init` message rather than forking
+the file. Read
+[README.md § Knowledge base view](README.md#knowledge-base-view) before you
+change anything in there. The rules that are easy to break by accident:
+
+- **`bridge.js` is copied byte-for-byte from the SDK scaffold. Do not edit it.**
+  Its `message` handler checks `event.source === window.parent` and
+  deliberately *not* `event.origin`, because the page's opaque origin arrives
+  as the literal string `"null"`.
+- **No remote assets.** `gtdx lint` rejects a remote `<script src>`/`<img src>`/
+  `<link href>` in the entry HTML with `E_VIEW_REMOTE_ASSET`. No CDN, so no
+  framework — plain JS on purpose. Lint only scans the entry HTML, so a URL
+  built at runtime in `app.js` would evade it; don't add one.
+- **Never `innerHTML` anything tool-derived**, and never `window.confirm` /
+  `window.alert` (a native modal blocks the frame's event loop and strands
+  every bridge reply). Confirmation is in-page.
+- **The page must not send a `collection` argument.** The host stamps the
+  tenant's collection via the reserved `_tenant_overlay` args key, and
+  `ops::collection_of` now *refuses* a per-call override when it has — so
+  sending one turns every call into an error. See
+  [README.md § Collections and tenancy](README.md#collections-and-tenancy).
+- `runtime.permissions.ui` is intentionally empty: the page only uses
+  `invokeTool`, which is authorised by `views[].tools`, not by `ui`.
+- After changing any of it: `gtdx lint` **and** `gtdx validate` (lint works from
+  raw JSON and will not catch a bad `views[].tools` entry; validate will).
+
+## Tenant isolation
+
+`_tenant_overlay` is a reserved tool-argument key the host stamps onto **every**
+call, carrying this extension's effective per-tenant config. Both hosts strip it
+from the caller's own args first, so inside the guest it is trusted; a plain
+`collection` argument never can be.
+
+`ops::collection_of` resolves overlay → caller argument → process config, and
+refuses a caller argument outright whenever the overlay pins a collection. If
+you add a tool, route it through `collection_of` and resolve **before** any host
+call — a refusal must not first spend an embeddings request, and the check
+belongs ahead of the side effects. `input::TenantOverlay` deliberately ignores
+unknown keys so a host that learns to send more of the config cannot break a
+guest that has not learned to read it.
+
+Never cache the overlay in a `static`. The config `OnceLock` is per-instance;
+the overlay is per-call, and one instance serves many tenants.
+
+Read [README.md § Collections and tenancy](README.md#collections-and-tenancy),
+especially "Where this is still not airtight", before changing any of it.
 
 ## Secrets
 

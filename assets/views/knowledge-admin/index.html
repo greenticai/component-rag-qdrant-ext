@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Knowledge base</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main id="app" aria-busy="true">
+      <header class="head">
+        <h1>Knowledge base</h1>
+        <p id="status" class="status status--pending" role="status">
+          Connecting to the host…
+        </p>
+      </header>
+
+      <!-- Everything below stays hidden until greentic.ready resolves: without
+           the bridge not one control on this page can do anything. -->
+      <div id="workspace" hidden>
+        <nav class="tabs" role="tablist" aria-label="Knowledge base sections">
+          <button
+            id="tab-documents"
+            class="tab tab--active"
+            type="button"
+            role="tab"
+            aria-selected="true"
+            aria-controls="panel-documents"
+          >
+            Documents
+          </button>
+          <button
+            id="tab-search"
+            class="tab"
+            type="button"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-search"
+          >
+            Search
+          </button>
+        </nav>
+
+        <section
+          id="panel-documents"
+          role="tabpanel"
+          aria-labelledby="tab-documents"
+        >
+          <div class="card">
+            <h2>Add a document</h2>
+            <p class="hint">
+              Plain text (<code>.txt</code>, <code>.csv</code>), Markdown
+              (<code>.md</code>) and PDF (<code>.pdf</code>). The file is read here in your browser —
+              only the text it contains is sent on.
+            </p>
+
+            <div id="drop" class="drop">
+              <label class="file-label" for="file">
+                <span class="btn btn--secondary">Choose a file</span>
+                <input
+                  id="file"
+                  type="file"
+                  accept=".txt,.text,.csv,.tsv,.md,.markdown,.mdown,.mkd,.pdf,text/plain,text/csv,text/markdown,application/pdf"
+                />
+              </label>
+              <span class="drop__hint">or drop one here</span>
+            </div>
+
+            <div id="extract" class="extract" hidden>
+              <p id="extract-label" class="extract__label"></p>
+              <div
+                id="bar"
+                class="bar"
+                role="progressbar"
+                aria-labelledby="extract-label"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow="0"
+              >
+                <div id="extract-bar" class="bar__fill"></div>
+              </div>
+            </div>
+
+            <div id="staged" class="staged" hidden>
+              <div class="field">
+                <label for="doc-id">Document name</label>
+                <input id="doc-id" type="text" autocomplete="off" spellcheck="false" />
+                <p class="hint">
+                  Uploading again under the same name replaces the old version
+                  instead of duplicating it.
+                </p>
+                <p id="replace-notice" class="replace-notice" hidden></p>
+              </div>
+
+              <div id="staged-warnings" class="warnings" hidden></div>
+
+              <p id="staged-summary" class="staged__summary"></p>
+
+              <details class="preview">
+                <summary>Preview the extracted text</summary>
+                <pre id="staged-preview" class="preview__body"></pre>
+              </details>
+
+              <div class="row">
+                <button id="ingest" class="btn btn--primary" type="button">
+                  Add to knowledge base
+                </button>
+                <button id="ingest-cancel" class="btn btn--ghost" type="button">
+                  Discard
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="row row--split">
+              <h2>Stored documents</h2>
+              <button id="refresh" class="btn btn--secondary" type="button">
+                Refresh
+              </button>
+            </div>
+            <p id="docs-note" class="hint">
+              Chunk counts are for this page only — a document whose chunks
+              straddle a page boundary is counted on each page it appears in.
+            </p>
+            <div id="docs" class="docs"></div>
+            <div class="row">
+              <button id="prev-page" class="btn btn--secondary" type="button" hidden>
+                Previous page
+              </button>
+              <button id="next-page" class="btn btn--secondary" type="button" hidden>
+                Next page
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section
+          id="panel-search"
+          role="tabpanel"
+          aria-labelledby="tab-search"
+          hidden
+        >
+          <div class="card">
+            <h2>Search</h2>
+            <form id="search-form" class="row">
+              <input
+                id="search-q"
+                type="search"
+                aria-label="What are you looking for?"
+                placeholder="Ask a question, or describe what you are looking for"
+                autocomplete="off"
+              />
+              <label class="field field--inline" for="search-k">
+                <span>Results</span>
+                <input id="search-k" type="number" min="1" max="50" value="5" />
+              </label>
+              <button id="search-go" class="btn btn--primary" type="submit">
+                Search
+              </button>
+            </form>
+            <div id="hits" class="hits" aria-live="polite"></div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <div id="toast" class="pagemsg" role="status" aria-live="polite" hidden></div>
+
+    <script src="bridge.js"></script>
+    <script src="pdf.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

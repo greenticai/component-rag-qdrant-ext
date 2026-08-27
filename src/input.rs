@@ -22,6 +22,40 @@ fn empty_object() -> Value {
     Value::Object(serde_json::Map::new())
 }
 
+/// The host's per-tenant configuration for this extension, delivered on every
+/// call under the reserved args key `_tenant_overlay`.
+///
+/// This is the extension's *effective* config for the calling tenant — the
+/// operator baseline deep-merged with that tenant's override — resolved by the
+/// host from its own `extension_config` tables. It is emphatically **not**
+/// caller input: both hosts strip `_tenant_overlay` from the caller's
+/// arguments unconditionally and re-insert their own, including when a tenant
+/// has no override configured. That unconditional strip is what makes this
+/// trustworthy where the plain `collection` argument never can be — without
+/// it, a caller could smuggle an overlay naming another tenant's collection
+/// during the window when no override happened to be set.
+///
+/// Every field is optional, and unknown keys are ignored rather than rejected:
+/// the blob's shape is this extension's to define, so a host that learns to
+/// send more of it must not break a guest that has not learned to read it yet.
+///
+/// Deliberately **not** cached in a `static`. The process-wide config
+/// `OnceLock` is per-instance; this is per-call, and one instance serves many
+/// tenants.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TenantOverlay {
+    /// The collection this tenant's data lives in. When present it is
+    /// authoritative — see `ops::collection_of`.
+    #[serde(default)]
+    pub collection: Option<String>,
+    /// Present in a fully-merged overlay because it is part of the baseline.
+    /// This extension cannot honour a *differing* one — `qdrant_url` is read
+    /// straight off the process config by every request builder — so a
+    /// disagreement is refused rather than silently ignored.
+    #[serde(default)]
+    pub qdrant_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchInput {
     #[serde(default)]
@@ -34,6 +68,9 @@ pub struct SearchInput {
     pub filter: Option<Value>,
     #[serde(default)]
     pub collection: Option<String>,
+    /// Injected by the host, never by the caller. See [`TenantOverlay`].
+    #[serde(rename = "_tenant_overlay", default)]
+    pub tenant_overlay: Option<TenantOverlay>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -47,6 +84,9 @@ pub struct UpsertInput {
     pub payload: Value,
     #[serde(default)]
     pub collection: Option<String>,
+    /// Injected by the host, never by the caller. See [`TenantOverlay`].
+    #[serde(rename = "_tenant_overlay", default)]
+    pub tenant_overlay: Option<TenantOverlay>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -57,6 +97,9 @@ pub struct IngestInput {
     pub metadata: Value,
     #[serde(default)]
     pub collection: Option<String>,
+    /// Injected by the host, never by the caller. See [`TenantOverlay`].
+    #[serde(rename = "_tenant_overlay", default)]
+    pub tenant_overlay: Option<TenantOverlay>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -67,6 +110,9 @@ pub struct DeleteInput {
     pub doc_id: Option<String>,
     #[serde(default)]
     pub collection: Option<String>,
+    /// Injected by the host, never by the caller. See [`TenantOverlay`].
+    #[serde(rename = "_tenant_overlay", default)]
+    pub tenant_overlay: Option<TenantOverlay>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -77,6 +123,9 @@ pub struct EnsureInput {
     pub dimensions: Option<u32>,
     #[serde(default = "default_distance")]
     pub distance: String,
+    /// Injected by the host, never by the caller. See [`TenantOverlay`].
+    #[serde(rename = "_tenant_overlay", default)]
+    pub tenant_overlay: Option<TenantOverlay>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -94,6 +143,9 @@ pub struct ListInput {
     pub filter: Option<Value>,
     #[serde(default)]
     pub collection: Option<String>,
+    /// Injected by the host, never by the caller. See [`TenantOverlay`].
+    #[serde(rename = "_tenant_overlay", default)]
+    pub tenant_overlay: Option<TenantOverlay>,
 }
 
 fn decode<T: for<'de> Deserialize<'de>>(tool: &str, json: &str) -> Result<T, RagError> {

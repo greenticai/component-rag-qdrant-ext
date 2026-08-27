@@ -49,7 +49,7 @@ const SEARCH_INPUT: &str = r#"{
     "vector": { "type": "array", "items": { "type": "number" }, "description": "A pre-computed embedding. Pass this OR query, not both." },
     "top_k": { "type": "integer", "minimum": 1, "description": "How many results to return (default 5)." },
     "filter": { "type": "object", "description": "A Qdrant filter object, passed through verbatim." },
-    "collection": { "type": "string", "description": "Override the configured default collection." }
+    "collection": { "type": "string", "description": "Override the configured default collection. Rejected when the host supplies a per-tenant collection for the caller \u2014 in a multi-tenant install the collection is chosen by tenant configuration, not per call." }
   },
   "oneOf": [
     { "required": ["query"],  "not": { "required": ["vector"] } },
@@ -65,7 +65,7 @@ const UPSERT_INPUT: &str = r#"{
     "text": { "type": "string", "description": "Text to embed and store. Pass this OR vector, not both." },
     "vector": { "type": "array", "items": { "type": "number" }, "description": "A pre-computed embedding. Pass this OR text, not both." },
     "payload": { "type": "object", "description": "Arbitrary metadata stored alongside the point." },
-    "collection": { "type": "string", "description": "Override the configured default collection." }
+    "collection": { "type": "string", "description": "Override the configured default collection. Rejected when the host supplies a per-tenant collection for the caller \u2014 in a multi-tenant install the collection is chosen by tenant configuration, not per call." }
   },
   "oneOf": [
     { "required": ["text"],   "not": { "required": ["vector"] } },
@@ -80,7 +80,7 @@ const INGEST_INPUT: &str = r#"{
     "doc_id": { "type": "string", "description": "Stable document identifier. Re-ingesting the same doc_id replaces its chunks." },
     "text": { "type": "string", "description": "Full document text. It is chunked, embedded and stored." },
     "metadata": { "type": "object", "description": "Metadata copied onto every chunk of this document." },
-    "collection": { "type": "string", "description": "Override the configured default collection." }
+    "collection": { "type": "string", "description": "Override the configured default collection. Rejected when the host supplies a per-tenant collection for the caller \u2014 in a multi-tenant install the collection is chosen by tenant configuration, not per call." }
   }
 }"#;
 
@@ -89,7 +89,7 @@ const DELETE_INPUT: &str = r#"{
   "properties": {
     "ids": { "type": "array", "items": { "type": "string" }, "description": "Point ids to delete. Pass this OR doc_id, not both." },
     "doc_id": { "type": "string", "description": "Delete every chunk of this document. Pass this OR ids, not both." },
-    "collection": { "type": "string", "description": "Override the configured default collection." }
+    "collection": { "type": "string", "description": "Override the configured default collection. Rejected when the host supplies a per-tenant collection for the caller \u2014 in a multi-tenant install the collection is chosen by tenant configuration, not per call." }
   },
   "oneOf": [
     { "required": ["ids"],    "not": { "required": ["doc_id"] } },
@@ -100,7 +100,7 @@ const DELETE_INPUT: &str = r#"{
 const ENSURE_INPUT: &str = r#"{
   "type": "object",
   "properties": {
-    "collection": { "type": "string", "description": "Collection to create. Defaults to the configured one." },
+    "collection": { "type": "string", "description": "Collection to create. Defaults to the configured one. Rejected when the host supplies a per-tenant collection for the caller." },
     "dimensions": { "type": "integer", "minimum": 1, "description": "Vector width. Defaults to the configured embedding dimensions." },
     "distance": { "type": "string", "enum": ["Cosine", "Dot", "Euclid"], "description": "Distance metric (default Cosine)." }
   }
@@ -112,7 +112,7 @@ const LIST_INPUT: &str = r#"{
     "limit": { "type": "integer", "minimum": 1, "description": "Max chunks to scan per page (default 50). Chunk counts in the response are only for chunks returned within this page." },
     "offset": { "description": "Opaque page cursor from a previous call's next_page_offset. Omit to start from the first page." },
     "filter": { "type": "object", "description": "A Qdrant filter object, passed through verbatim." },
-    "collection": { "type": "string", "description": "Override the configured default collection." }
+    "collection": { "type": "string", "description": "Override the configured default collection. Rejected when the host supplies a per-tenant collection for the caller \u2014 in a multi-tenant install the collection is chosen by tenant configuration, not per call." }
   }
 }"#;
 

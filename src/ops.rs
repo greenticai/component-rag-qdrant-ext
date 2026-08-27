@@ -8,7 +8,9 @@ use crate::config::Config;
 use crate::embed::{embed_request, parse_embed_response};
 use crate::error::RagError;
 use crate::host::{HostCalls, HttpRequest, HttpResponse};
-use crate::input::{DeleteInput, EnsureInput, IngestInput, ListInput, SearchInput, UpsertInput};
+use crate::input::{
+    DeleteInput, EnsureInput, IngestInput, ListInput, SearchInput, TenantOverlay, UpsertInput,
+};
 use crate::qdrant::{
     DeleteSelector, Point, ScrollPoint, chunk_point_id, delete_request, ensure_collection_request,
     parse_ack, parse_ensure_ack, parse_hits, parse_scroll, query_request, scroll_request,
@@ -30,8 +32,94 @@ fn secret<H: HostCalls>(host: &H, uri: &str) -> Result<String, RagError> {
         .map_err(|e| RagError::PermissionDenied(format!("host could not resolve {uri}: {e}")))
 }
 
-fn collection_of<'a>(cfg: &'a Config, override_: Option<&'a String>) -> &'a str {
-    override_.map_or(cfg.collection.as_str(), String::as_str)
+/// Resolve which Qdrant collection this call reads and writes.
+///
+/// Precedence, highest first:
+///
+/// 1. `_tenant_overlay.collection` — the host's per-tenant config. Host-set
+///    and unforgeable (see [`TenantOverlay`]), so it is the isolation
+///    boundary and nothing a caller says may move it.
+/// 2. the caller's `collection` argument — only when no overlay pins one.
+/// 3. `collection` from the operator config parsed in `lifecycle::init`.
+///
+/// **Any caller `collection` is refused while an overlay pins one, even one
+/// that matches.** Ignoring a disagreement silently would let a flow author
+/// believe they were reading a collection they were not — the failure this
+/// whole ordering exists to prevent. Refusing only a *disagreement* would
+/// leave the matching case as a quiet invitation to hard-code a tenant's
+/// collection name into a flow, which reviews cleanly, works until the tenant
+/// is reconfigured or the flow is copied to another tenant, and then breaks
+/// somewhere far away. One total rule — "when the host pins the collection,
+/// the argument is not yours to set" — is easier to document, to test, and to
+/// act on than a rule with an exception in it.
+///
+/// Step 2 is what keeps single-tenant and local development working: with no
+/// overlay at all there is nothing to undermine, and the argument behaves
+/// exactly as it always has.
+///
+/// # Errors
+/// [`RagError::InvalidInput`] if the caller passed `collection` while the
+/// overlay pins one, if the overlay's collection is blank, or if the overlay
+/// carries a `qdrant_url` this extension cannot honour.
+/// [`RagError::PermissionDenied`] if the operator requires a tenant overlay
+/// and none arrived.
+fn collection_of<'a>(
+    cfg: &'a Config,
+    overlay: Option<&'a TenantOverlay>,
+    override_: Option<&'a String>,
+) -> Result<&'a str, RagError> {
+    let pinned = overlay.and_then(|o| o.collection.as_deref());
+
+    // The overlay is the effective config, so in a fully-merged one this key
+    // is present and equals the baseline. A *differing* value means the
+    // operator is isolating tenants by cluster rather than by collection —
+    // which every request builder here would ignore, because it reads
+    // `cfg.qdrant_url` directly. Reading one tenant's collection name off the
+    // wrong cluster is precisely the cross-tenant read to refuse.
+    if let Some(url) = overlay.and_then(|o| o.qdrant_url.as_deref())
+        && url != cfg.qdrant_url
+    {
+        return Err(RagError::InvalidInput(format!(
+            "tenant overlay sets qdrant_url {url:?}, which differs from this instance's \
+             configured {:?}. This extension reads the cluster URL from its own config, so it \
+             cannot serve a per-tenant cluster; isolate tenants by collection instead, or run \
+             one instance per cluster.",
+            cfg.qdrant_url
+        )));
+    }
+
+    match pinned {
+        Some(pinned) => {
+            if pinned.trim().is_empty() {
+                return Err(RagError::InvalidInput(
+                    "tenant overlay pins an empty collection name; fix this tenant's extension \
+                     configuration"
+                        .into(),
+                ));
+            }
+            if let Some(requested) = override_ {
+                return Err(RagError::InvalidInput(format!(
+                    "collection {requested:?} was passed, but this tenant's collection is set \
+                     by the host ({pinned:?}) and cannot be overridden per call. Remove the \
+                     `collection` argument."
+                )));
+            }
+            Ok(pinned)
+        }
+        // No overlay collection. Single-tenant installs and local development
+        // land here and keep their per-call override.
+        None => {
+            if cfg.require_tenant_overlay {
+                return Err(RagError::PermissionDenied(
+                    "this instance sets require_tenant_overlay, but the host sent no tenant \
+                     collection for this call. Refusing rather than falling back to the shared \
+                     configured collection."
+                        .into(),
+                ));
+            }
+            Ok(override_.map_or(cfg.collection.as_str(), String::as_str))
+        }
+    }
 }
 
 /// Embed a batch of texts in one call.
@@ -95,6 +183,16 @@ pub fn search<H: HostCalls>(
     cfg: &Config,
     input: &SearchInput,
 ) -> Result<Value, RagError> {
+    // Resolved first, ahead of any host call. Embedding before deciding which
+    // collection the call is even allowed to touch would bill the operator for
+    // an embeddings request that is about to be refused — and, worse, put a
+    // side effect before an authorisation check.
+    let collection = collection_of(
+        cfg,
+        input.tenant_overlay.as_ref(),
+        input.collection.as_ref(),
+    )?;
+
     let vector = match (&input.vector, &input.query) {
         (Some(v), _) => {
             check_width(cfg, v)?;
@@ -116,7 +214,7 @@ pub fn search<H: HostCalls>(
     let key = secret(host, QDRANT_KEY_REF)?;
     let req = query_request(
         &cfg.qdrant_url,
-        collection_of(cfg, input.collection.as_ref()),
+        collection,
         &vector,
         input.top_k,
         input.filter.as_ref(),
@@ -147,6 +245,16 @@ pub fn upsert<H: HostCalls>(
         ));
     }
 
+    // Resolved first, ahead of any host call. Embedding before deciding which
+    // collection the call is even allowed to touch would bill the operator for
+    // an embeddings request that is about to be refused — and, worse, put a
+    // side effect before an authorisation check.
+    let collection = collection_of(
+        cfg,
+        input.tenant_overlay.as_ref(),
+        input.collection.as_ref(),
+    )?;
+
     let vector = match (&input.vector, &input.text) {
         (Some(v), _) => {
             check_width(cfg, v)?;
@@ -164,7 +272,6 @@ pub fn upsert<H: HostCalls>(
     };
 
     let key = secret(host, QDRANT_KEY_REF)?;
-    let collection = collection_of(cfg, input.collection.as_ref());
     ensure(
         host,
         cfg,
@@ -213,6 +320,15 @@ pub fn ingest<H: HostCalls>(
         ));
     }
 
+    // Resolved before chunking and embedding. A refusal here must not cost the
+    // operator an embeddings call for every chunk of the document, and an
+    // authorisation check belongs ahead of the side effects, not between them.
+    let collection = collection_of(
+        cfg,
+        input.tenant_overlay.as_ref(),
+        input.collection.as_ref(),
+    )?;
+
     let chunks = chunk_text(&input.text, cfg.chunk.max_chars, cfg.chunk.overlap_chars);
     if chunks.is_empty() {
         return Err(RagError::InvalidInput(
@@ -222,7 +338,6 @@ pub fn ingest<H: HostCalls>(
 
     let vectors = embed_all(host, cfg, &chunks)?;
     let key = secret(host, QDRANT_KEY_REF)?;
-    let collection = collection_of(cfg, input.collection.as_ref());
 
     ensure(
         host,
@@ -292,7 +407,11 @@ pub fn delete<H: HostCalls>(
     let key = secret(host, QDRANT_KEY_REF)?;
     let req = delete_request(
         &cfg.qdrant_url,
-        collection_of(cfg, input.collection.as_ref()),
+        collection_of(
+            cfg,
+            input.tenant_overlay.as_ref(),
+            input.collection.as_ref(),
+        )?,
         &selector,
         &key,
     );
@@ -309,7 +428,11 @@ pub fn ensure_collection<H: HostCalls>(
     input: &EnsureInput,
 ) -> Result<Value, RagError> {
     let key = secret(host, QDRANT_KEY_REF)?;
-    let collection = collection_of(cfg, input.collection.as_ref());
+    let collection = collection_of(
+        cfg,
+        input.tenant_overlay.as_ref(),
+        input.collection.as_ref(),
+    )?;
     let dimensions = input.dimensions.unwrap_or(cfg.embedding.dimensions);
     ensure(host, cfg, collection, dimensions, &input.distance, &key)?;
     Ok(serde_json::json!({
@@ -398,7 +521,11 @@ pub fn list<H: HostCalls>(host: &H, cfg: &Config, input: &ListInput) -> Result<V
     let key = secret(host, QDRANT_KEY_REF)?;
     let req = scroll_request(
         &cfg.qdrant_url,
-        collection_of(cfg, input.collection.as_ref()),
+        collection_of(
+            cfg,
+            input.tenant_overlay.as_ref(),
+            input.collection.as_ref(),
+        )?,
         input.limit,
         input.offset.as_ref(),
         input.filter.as_ref(),
@@ -511,6 +638,7 @@ mod tests {
                 max_chars: 10,
                 overlap_chars: 2,
             },
+            require_tenant_overlay: false,
         }
     }
 
@@ -926,5 +1054,271 @@ mod tests {
                 .url
                 .contains("/collections/other/points/scroll")
         );
+    }
+
+    // ---- tenant overlay -------------------------------------------------
+    //
+    // `_tenant_overlay` is stamped by the host on every call and stripped from
+    // the caller's own args first, so from in here it is trusted input. These
+    // tests pin the precedence it establishes over the `collection` argument.
+
+    fn cfg_requiring_overlay() -> Config {
+        Config {
+            require_tenant_overlay: true,
+            ..cfg()
+        }
+    }
+
+    #[test]
+    fn the_tenant_overlay_collection_reaches_the_request_url() {
+        let body =
+            serde_json::json!({"result": {"points": [], "next_page_offset": null}}).to_string();
+        let host = list_host(ok(&body), "tenant-a");
+        let input =
+            crate::input::parse_list(r#"{"_tenant_overlay":{"collection":"tenant-a"}}"#).unwrap();
+        list(&host, &cfg(), &input).unwrap();
+        assert!(
+            host.http.calls()[0]
+                .url
+                .contains("/collections/tenant-a/points/scroll")
+        );
+    }
+
+    #[test]
+    fn the_overlay_outranks_the_configured_default_without_any_caller_argument() {
+        let host = happy_host(1);
+        host.http.expect(
+            "POST",
+            &format!("{BASE}/collections/tenant-a/points/query"),
+            ok(r#"{"result":{"points":[]}}"#),
+        );
+        let input = crate::input::parse_search(
+            r#"{"vector":[0.1,0.2,0.3],"_tenant_overlay":{"collection":"tenant-a"}}"#,
+        )
+        .unwrap();
+        search(&host, &cfg(), &input).unwrap();
+        assert!(host.http.calls()[0].url.contains("/collections/tenant-a/"));
+    }
+
+    /// The whole point of the ordering: a caller cannot read another tenant's
+    /// collection by naming it, and is told so rather than quietly served the
+    /// right one.
+    #[test]
+    fn a_caller_collection_is_refused_while_the_overlay_pins_one() {
+        let host = happy_host(1);
+        let input = crate::input::parse_search(
+            r#"{"vector":[0.1,0.2,0.3],"collection":"tenant-b","_tenant_overlay":{"collection":"tenant-a"}}"#,
+        )
+        .unwrap();
+        let err = search(&host, &cfg(), &input).unwrap_err();
+        assert!(
+            matches!(err, RagError::InvalidInput(ref m)
+                if m.contains("tenant-b") && m.contains("tenant-a")),
+            "unexpected error: {err:?}"
+        );
+        assert!(
+            host.http.calls().is_empty(),
+            "refusal must happen before any host call"
+        );
+    }
+
+    /// Refused even when it agrees. See `collection_of`: one total rule, and
+    /// a matching override is an invitation to hard-code a tenant's collection
+    /// into a flow that will be copied to another tenant later.
+    #[test]
+    fn a_caller_collection_matching_the_overlay_is_refused_too() {
+        let host = happy_host(1);
+        let input = crate::input::parse_search(
+            r#"{"vector":[0.1,0.2,0.3],"collection":"tenant-a","_tenant_overlay":{"collection":"tenant-a"}}"#,
+        )
+        .unwrap();
+        let err = search(&host, &cfg(), &input).unwrap_err();
+        assert!(matches!(err, RagError::InvalidInput(_)), "got {err:?}");
+        assert!(host.http.calls().is_empty());
+    }
+
+    /// Regression: the refusal used to land *after* the embeddings call on the
+    /// text path, so a rejected search still billed the operator for an
+    /// embedding — a side effect before an authorisation check. The
+    /// vector-path tests above cannot catch this, because they never embed.
+    #[test]
+    fn a_refused_search_on_the_text_path_never_reaches_the_embeddings_api() {
+        let host = happy_host(1);
+        let input = crate::input::parse_search(
+            r#"{"query":"anything","collection":"tenant-b","_tenant_overlay":{"collection":"tenant-a"}}"#,
+        )
+        .unwrap();
+        let err = search(&host, &cfg(), &input).unwrap_err();
+        assert!(matches!(err, RagError::InvalidInput(_)), "got {err:?}");
+        assert!(
+            host.http.calls().is_empty(),
+            "no embeddings call may precede the refusal"
+        );
+    }
+
+    /// Same ordering, for the tool that would embed every chunk of a document.
+    #[test]
+    fn a_refused_ingest_never_reaches_the_embeddings_api() {
+        let host = happy_host(4);
+        let input = crate::input::parse_ingest(
+            r#"{"doc_id":"d1","text":"a much longer document that would chunk into several pieces","collection":"tenant-b","_tenant_overlay":{"collection":"tenant-a"}}"#,
+        )
+        .unwrap();
+        let err = ingest(&host, &cfg(), &input).unwrap_err();
+        assert!(matches!(err, RagError::InvalidInput(_)), "got {err:?}");
+        assert!(host.http.calls().is_empty());
+    }
+
+    /// Deleting is the destructive one; the same refusal must cover it, or a
+    /// caller could aim a delete at a collection the overlay did not choose.
+    #[test]
+    fn delete_also_refuses_a_caller_collection_under_an_overlay() {
+        let host = happy_host(0);
+        let input = crate::input::parse_delete(
+            r#"{"doc_id":"d1","collection":"tenant-b","_tenant_overlay":{"collection":"tenant-a"}}"#,
+        )
+        .unwrap();
+        let err = delete(&host, &cfg(), &input).unwrap_err();
+        assert!(matches!(err, RagError::InvalidInput(_)), "got {err:?}");
+        assert!(host.http.calls().is_empty());
+    }
+
+    #[test]
+    fn ingest_also_refuses_a_caller_collection_under_an_overlay() {
+        let host = happy_host(1);
+        let input = crate::input::parse_ingest(
+            r#"{"doc_id":"d1","text":"hello there","collection":"tenant-b","_tenant_overlay":{"collection":"tenant-a"}}"#,
+        )
+        .unwrap();
+        let err = ingest(&host, &cfg(), &input).unwrap_err();
+        assert!(matches!(err, RagError::InvalidInput(_)), "got {err:?}");
+        assert!(
+            host.http.calls().is_empty(),
+            "nothing may be embedded or written before the refusal"
+        );
+    }
+
+    /// Single-tenant and local development: no overlay, so the argument keeps
+    /// working exactly as it did before tenant stamping existed.
+    #[test]
+    fn a_caller_collection_still_works_when_no_overlay_is_present() {
+        let body =
+            serde_json::json!({"result": {"points": [], "next_page_offset": null}}).to_string();
+        let host = list_host(ok(&body), "other");
+        let input = crate::input::parse_list(r#"{"collection":"other"}"#).unwrap();
+        list(&host, &cfg(), &input).unwrap();
+        assert!(host.http.calls()[0].url.contains("/collections/other/"));
+    }
+
+    /// An overlay that arrives carrying no collection is the same situation as
+    /// no overlay at all — the host had nothing configured for this tenant.
+    #[test]
+    fn an_overlay_without_a_collection_leaves_the_caller_override_alone() {
+        let body =
+            serde_json::json!({"result": {"points": [], "next_page_offset": null}}).to_string();
+        let host = list_host(ok(&body), "other");
+        let input = crate::input::parse_list(
+            r#"{"collection":"other","_tenant_overlay":{"qdrant_url":"https://c.qdrant.io:6333"}}"#,
+        )
+        .unwrap();
+        list(&host, &cfg(), &input).unwrap();
+        assert!(host.http.calls()[0].url.contains("/collections/other/"));
+    }
+
+    #[test]
+    fn a_blank_overlay_collection_is_refused_rather_than_used() {
+        let host = happy_host(1);
+        let input = crate::input::parse_search(
+            r#"{"vector":[0.1,0.2,0.3],"_tenant_overlay":{"collection":"   "}}"#,
+        )
+        .unwrap();
+        let err = search(&host, &cfg(), &input).unwrap_err();
+        assert!(matches!(err, RagError::InvalidInput(_)), "got {err:?}");
+        assert!(host.http.calls().is_empty());
+    }
+
+    /// A fully-merged overlay echoes the baseline url, which must not trip the
+    /// mismatch guard.
+    #[test]
+    fn an_overlay_repeating_the_configured_qdrant_url_is_accepted() {
+        let body =
+            serde_json::json!({"result": {"points": [], "next_page_offset": null}}).to_string();
+        let host = list_host(ok(&body), "tenant-a");
+        let json =
+            format!(r#"{{"_tenant_overlay":{{"collection":"tenant-a","qdrant_url":"{BASE}"}}}}"#);
+        let input = crate::input::parse_list(&json).unwrap();
+        list(&host, &cfg(), &input).unwrap();
+        assert!(host.http.calls()[0].url.contains("/collections/tenant-a/"));
+    }
+
+    /// Isolating tenants by cluster is a shape this extension cannot serve:
+    /// every request builder reads `cfg.qdrant_url`. Refuse loudly instead of
+    /// reading a tenant's collection name off the wrong cluster.
+    #[test]
+    fn an_overlay_qdrant_url_that_disagrees_is_refused() {
+        let host = happy_host(1);
+        let input = crate::input::parse_search(
+            r#"{"vector":[0.1,0.2,0.3],"_tenant_overlay":{"collection":"tenant-a","qdrant_url":"https://elsewhere.qdrant.io:6333"}}"#,
+        )
+        .unwrap();
+        let err = search(&host, &cfg(), &input).unwrap_err();
+        assert!(
+            matches!(err, RagError::InvalidInput(ref m) if m.contains("elsewhere.qdrant.io")),
+            "unexpected error: {err:?}"
+        );
+        assert!(host.http.calls().is_empty());
+    }
+
+    /// The fail-open hole, closed by opt-in: a host that never stamps an
+    /// overlay would otherwise serve every tenant the configured collection.
+    #[test]
+    fn require_tenant_overlay_refuses_a_call_the_host_did_not_stamp() {
+        let host = happy_host(1);
+        let input = crate::input::parse_search(r#"{"vector":[0.1,0.2,0.3]}"#).unwrap();
+        let err = search(&host, &cfg_requiring_overlay(), &input).unwrap_err();
+        assert!(
+            matches!(err, RagError::PermissionDenied(ref m) if m.contains("require_tenant_overlay")),
+            "unexpected error: {err:?}"
+        );
+        assert!(host.http.calls().is_empty());
+    }
+
+    /// ...and it must not refuse a caller override either, or an operator
+    /// could work around the requirement from a flow.
+    #[test]
+    fn require_tenant_overlay_is_not_satisfied_by_a_caller_collection() {
+        let host = happy_host(1);
+        let input =
+            crate::input::parse_search(r#"{"vector":[0.1,0.2,0.3],"collection":"tenant-a"}"#)
+                .unwrap();
+        let err = search(&host, &cfg_requiring_overlay(), &input).unwrap_err();
+        assert!(matches!(err, RagError::PermissionDenied(_)), "got {err:?}");
+        assert!(host.http.calls().is_empty());
+    }
+
+    #[test]
+    fn require_tenant_overlay_passes_once_the_host_stamps_one() {
+        let body =
+            serde_json::json!({"result": {"points": [], "next_page_offset": null}}).to_string();
+        let host = list_host(ok(&body), "tenant-a");
+        let input =
+            crate::input::parse_list(r#"{"_tenant_overlay":{"collection":"tenant-a"}}"#).unwrap();
+        list(&host, &cfg_requiring_overlay(), &input).unwrap();
+        assert!(host.http.calls()[0].url.contains("/collections/tenant-a/"));
+    }
+
+    /// Forward compatibility: a host that learns to send more of the config
+    /// must not break a guest that only reads part of it.
+    #[test]
+    fn unknown_keys_inside_the_overlay_are_ignored() {
+        let body =
+            serde_json::json!({"result": {"points": [], "next_page_offset": null}}).to_string();
+        let host = list_host(ok(&body), "tenant-a");
+        let input = crate::input::parse_list(
+            r#"{"_tenant_overlay":{"collection":"tenant-a","embedding":{"dimensions":1536},"future_key":true}}"#,
+        )
+        .unwrap();
+        list(&host, &cfg(), &input).unwrap();
+        assert!(host.http.calls()[0].url.contains("/collections/tenant-a/"));
     }
 }
