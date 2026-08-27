@@ -9,7 +9,7 @@ repository. This is a Greentic Designer **design** extension scaffolded by
 
 ## What this is
 
-- **id:** `greentic.rag-qdrant`  ·  **version:** `0.2.0`  ·  **kind:** `design`
+- **id:** `greentic.rag-qdrant`  ·  **version:** `0.3.0`  ·  **kind:** `design`
 - A WebAssembly component (target `wasm32-wasip2`) that the Greentic runtime loads
   as a signed `.gtxpack`.
 - Exposes six tools to both flow nodes and the agentic worker, backed by a Qdrant
@@ -238,7 +238,7 @@ especially "Where this is still not airtight", before changing any of it.
 ## Secrets
 
 Never hardcode credentials or API keys in `src/lib.rs`. If the extension needs a
-secret, declare it under `secret_requirements` in `describe.json`; the runtime
+secret, declare it under `requiredSecrets` in `describe.json`; the runtime
 resolves and injects it at execution time.
 
 ## Do NOT hand-edit these — generated or managed

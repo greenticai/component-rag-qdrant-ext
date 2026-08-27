@@ -429,10 +429,9 @@ the build finishes.
   call anywhere in the file (only comments referencing the rule) — delete confirmation
   is done in-page instead, because a native modal would block this frame's event loop
   and, with it, the `message` handler every pending bridge call is waiting on, stranding
-  them all until their individual 10-second timeouts fire. One correction to what the
-  other docs say: `TEXT_EXTENSIONS` here includes `csv` and `tsv` in addition to the
-  plain-text/Markdown extensions `README.md`'s file-format table lists — the table is
-  narrower than the code.
+  them all until their individual 10-second timeouts fire. `TEXT_EXTENSIONS` here
+  includes `csv` and `tsv` alongside the plain-text/Markdown extensions, matching
+  `README.md`'s file-format table.
 - **`style.css`** (420 lines) — theme tokens on `:root`, redefined under
   `@media (prefers-color-scheme: dark)` guarded by `:root:not([data-theme="light"])`,
   and again under `:root[data-theme="dark"]` so an explicit host-provided theme (from
@@ -540,7 +539,7 @@ should ever be committed.
 
 ## Docs and agent config
 
-- **`README.md`** (747 lines) — the usage-facing document: quick start, configuration
+- **`README.md`** (751 lines) — the usage-facing document: quick start, configuration
   table, secrets, the full tool reference (schemas pulled straight from
   `tool_meta.rs`), a worked three-call example, the knowledge-base view walkthrough,
   four design decisions with the bugs each one fixed, requirements/limits, and its own

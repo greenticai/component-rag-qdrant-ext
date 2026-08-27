@@ -7,9 +7,9 @@ flow nodes and the agentic worker — backed by a Qdrant vector collection:
 API; callers that already hold a vector can pass it directly instead.
 
 - id: `greentic.rag-qdrant`
-- version: `0.2.0`
+- version: `0.3.0`
 - contract: `greentic:extension-design@0.3.0`
-- published: `greentic.rag-qdrant@0.2.0` on the Greentic store
+- published: `greentic.rag-qdrant@0.3.0` on the Greentic store
 
 **If you are here to copy this repo as a starting point for your own
 extension**, the RAG/Qdrant part is the least important thing in it. What is
@@ -79,7 +79,7 @@ embeddings API instead of the network:
 cargo test ingest_deletes_the_document_before_upserting_its_chunks -- --nocapture
 ```
 
-or run everything with `cargo test` (95 tests, milliseconds, no WASM runtime
+or run everything with `cargo test` (115 tests, milliseconds, no WASM runtime
 involved — see [Testing](#testing)). To call a tool for real, install the
 built `.gtxpack` (above) into a Designer or agentic worker instance and give
 it the config and secrets above — that step happens outside this repo.
@@ -433,7 +433,7 @@ the conversion itself, before anything is sent:
 
 | Format | Handling |
 |---|---|
-| `.txt`, `.text` | Decoded as UTF-8 strictly; falls back to Windows-1252 with a visible warning. Bytes containing NUL are rejected as binary. |
+| `.txt`, `.text`, `.csv`, `.tsv` | Decoded as UTF-8 strictly; falls back to Windows-1252 with a visible warning. Bytes containing NUL are rejected as binary. |
 | `.md`, `.markdown`, `.mdown`, `.mkd` | Same as plain text; the Markdown is ingested as-is. |
 | `.pdf` | Text extracted in-page by `pdf.js` — see below. |
 | anything else | Rejected by name, with a message naming the formats that do work. |
@@ -587,7 +587,7 @@ allowed to import `bindings::`. Everywhere else — `ops.rs`, `qdrant.rs`,
 `embed.rs`, `chunk.rs`, `config.rs`, `input.rs`, `error.rs` — takes `&impl
 HostCalls` generically, and tests substitute the SDK's `MockHttpClient` /
 `MockSecretsBackend` (from `greentic-extension-sdk-testing`) instead of a real
-transport. That's what makes 95 tests run in milliseconds on the host instead
+transport. That's what makes 115 tests run in milliseconds on the host instead
 of requiring a WASM runtime or a live Qdrant cluster.
 
 `src/ops.rs` is the only module that sequences more than one host call for a
@@ -606,12 +606,12 @@ before writing your first tool.
 ## Testing
 
 ```
-cargo test                    # 95 tests, ~milliseconds, no WASM runtime
+cargo test                    # 115 tests, ~milliseconds, no WASM runtime
 ./ci/local_check.sh           # fmt + clippy -D warnings + test + build
 gtdx validate && gtdx lint    # describe.json against schema + cross-field invariants
 ```
 
-There are 95 unit tests and zero integration tests against a real Qdrant.
+There are 115 unit tests and zero integration tests against a real Qdrant.
 That is the point of the pure/host-boundary split above: every tool's logic —
 argument validation, request construction, response parsing, and the
 ordering across multiple host calls — runs against `MockHttpClient` /
