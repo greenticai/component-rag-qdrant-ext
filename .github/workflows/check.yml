@@ -1,0 +1,52 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Reused by publish.yml so a publish can never ship an artifact that has
+  # not passed this exact gate.
+  workflow_call: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  # Pinned >=1.2.10 (contributions.views manifest support this extension's
+  # describe.json uses — 1.2.7 fails `gtdx validate`/`gtdx lint` on it) and
+  # >=1.2.3 regardless (older release tarballs have a broken layout that
+  # makes `cargo binstall` silently fall back to a full source build). Bump
+  # deliberately, not automatically.
+  GTDX_VERSION: "1.2.15"
+  CARGO_COMPONENT_VERSION: "0.21.1"
+
+jobs:
+  check:
+    name: fmt + clippy + test + build + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-binstall
+        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+
+      - name: Install cargo-component (WASM component build target)
+        run: cargo binstall cargo-component --version "$CARGO_COMPONENT_VERSION" --no-confirm
+
+      - name: Install gtdx
+        run: cargo binstall greentic-extension-sdk-cli --version "$GTDX_VERSION" --no-confirm
+
+      # Runs what ci/local_check.sh runs: generate src/bindings.rs (gitignored,
+      # required by `mod bindings;`, absent on a fresh checkout), fmt --check
+      # (tolerating wit-bindgen's own formatting of the generated bindings
+      # file), clippy -D warnings, cargo test, and the release component build.
+      - name: cargo fmt + clippy + test + component build
+        run: ./ci/local_check.sh
+
+      - name: gtdx lint
+        run: gtdx lint --dir . --publish

@@ -1,0 +1,105 @@
+name: Publish
+
+# Tag-triggered rather than push-triggered: the store rejects overwriting a
+# version that is already published, so publishing on every push to `main`
+# would fail on every push that does not also bump the version. A `v*` tag
+# (mirroring the SDK's own release.yml) is an explicit, human-approved
+# "publish this version" action instead of an inferred one, and — unlike
+# wiring up the SDK's tag-on-version-bump.yml (which diffs a Cargo.toml
+# `[workspace.package] version` across pushes to `main` and is tuned for
+# that multi-crate workspace's shape) — needs nothing ported from another
+# repo to make it correct for a single extension whose version of record is
+# describe.json's `metadata.version`, mirrored in Cargo.toml's `version`.
+# workflow_dispatch is kept for a manual re-run (e.g. after fixing a
+# transient registry error) without needing to re-tag.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  GTDX_VERSION: "1.2.15"
+  CARGO_COMPONENT_VERSION: "0.21.1"
+  GREENTIC_STORE_URL: "https://store.greentic.cloud"
+
+jobs:
+  check:
+    name: Check
+    # Never ship an artifact that hasn't passed: same fmt/clippy/test/build
+    # + gtdx lint gate the check workflow runs on every push and PR.
+    uses: ./.github/workflows/check.yml
+
+  publish:
+    name: Publish to the Greentic store
+    needs: [check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-binstall
+        run: curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+
+      - name: Install cargo-component (WASM component build target)
+        run: cargo binstall cargo-component --version "$CARGO_COMPONENT_VERSION" --no-confirm
+
+      - name: Install gtdx
+        run: cargo binstall greentic-extension-sdk-cli --version "$GTDX_VERSION" --no-confirm
+
+      # `gtdx publish -r greentic-store` resolves its bearer token from the
+      # named registry's `token_env` (crates/greentic-extension-sdk-cli's
+      # resolve_registry_token/resolve_store_registry), *not* from a CLI
+      # flag or a ~/.greentic/credentials.toml value we would have to write.
+      # This writes only the *name* of the env var the token lives in —
+      # never a token value — into a config.toml that exists solely on this
+      # ephemeral runner. The token itself is set on each gtdx step below as
+      # the GREENTIC_STORE_TOKEN environment variable, sourced only from the
+      # repo secret; it never touches disk.
+      - name: Configure the greentic-store registry
+        run: gtdx registries add greentic-store "$GREENTIC_STORE_URL" --token-env GREENTIC_STORE_TOKEN
+
+      # A version already published to the store cannot be overwritten, so a
+      # re-run of a tag whose version already shipped (a re-triggered
+      # workflow_dispatch, a retried job, ...) must not look like a broken
+      # pipeline. `gtdx publish --verify-only` probes the registry for a
+      # conflict without building or writing anything, and reports it as a
+      # distinct exit code (10 = PublishError::VersionExists) rather than a
+      # generic failure — turn that into a clear, successful no-op instead of
+      # letting the later publish step fail on an opaque registry error.
+      - name: Check whether this version is already published
+        id: verify
+        env:
+          GREENTIC_STORE_TOKEN: ${{ secrets.GREENTIC_STORE_TOKEN }}
+        run: |
+          set +e
+          gtdx publish -r greentic-store --verify-only
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          elif [ "$status" -eq 10 ]; then
+            echo "::notice title=Already published::This describe.json version is already live in the Greentic store. Nothing to publish — treating this as a successful no-op rather than an error."
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error title=verify-only failed::gtdx publish --verify-only exited $status (not a version conflict); see the log above for the underlying registry error."
+            exit "$status"
+          fi
+
+      - name: Publish to the Greentic store
+        if: steps.verify.outputs.already_published == 'false'
+        env:
+          GREENTIC_STORE_TOKEN: ${{ secrets.GREENTIC_STORE_TOKEN }}
+        run: gtdx publish -r greentic-store
