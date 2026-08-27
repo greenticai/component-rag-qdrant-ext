@@ -9,7 +9,7 @@ both this document and `README.md`, see
 [`docs/HOW-TO-MAKE-A-RAG-EXTENSION.md`](HOW-TO-MAKE-A-RAG-EXTENSION.md).
 
 All facts below were checked against the code at the commit this document was written
-against (`v0.3.0`, 115 tests passing). Where a claim could not be checked against
+against (`v0.4.0`, 134 tests passing). Where a claim could not be checked against
 something in this repository, that is said explicitly rather than assumed.
 
 ## The one rule, before anything else
@@ -29,7 +29,7 @@ bindings, and it is also the only place in the crate allowed to import `bindings
 Every other module — `ops.rs`, `qdrant.rs`, `embed.rs`, `chunk.rs`, `config.rs`,
 `input.rs`, `error.rs`, `tool_meta.rs` — takes `&impl HostCalls` generically, and tests
 substitute `greentic-extension-sdk-testing`'s `MockHttpClient` / `MockSecretsBackend`
-instead of a real transport. That is what makes 115 tests run in milliseconds on the
+instead of a real transport. That is what makes 134 tests run in milliseconds on the
 host instead of requiring a WASM runtime or a live Qdrant cluster.
 
 If you copy this layout for a new extension: a `bindings::` call in a pure module passes
@@ -255,11 +255,22 @@ picking the wrong *existing* variant for a new failure (e.g. mapping a config pr
 `Internal` instead of `InvalidInput`), which silently changes how a host is expected to
 react to it.
 
-**`src/config.rs`** — `Config`/`EmbeddingConfig`/`ChunkConfig`, deserialized from the
-JSON body `lifecycle::init` receives; validates required fields are non-empty, strips
-trailing slashes from both URLs (an unstripped one would double a leading-slash path
-into `//collections/...`), defaults `chunk.max_chars`/`chunk.overlap_chars` to
-1200/150 and `require_tenant_overlay` to `false`. Stored once in a process-wide
+**`src/config.rs`** — two shapes and the merge between them. `ConfigOverlay` (with
+`EmbeddingOverlay`/`ChunkOverlay`) is the wire shape: every field optional, unknown keys
+ignored, and it is what arrives on *both* channels — the per-call `_tenant_overlay` the
+host stamps onto every tool call, and the JSON body of the optional `lifecycle::init`.
+`Config`/`EmbeddingConfig`/`ChunkConfig` are the resolved outcome: every field present,
+every field validated, deliberately not `Deserialize` because nothing ever arrives in
+that shape. `resolve()` merges an overlay over an optional baseline field by field —
+overlay wins, since it is the more specific and more recent statement of the same thing
+— strips trailing slashes from both URLs (an unstripped one would double a leading-slash
+path into `//collections/...`), defaults the embedding to the OpenAI triple and
+`chunk.max_chars`/`chunk.overlap_chars` to 1200/150, and then range-checks the merged
+result (cross-field checks like `overlap_chars < max_chars` are only meaningful after
+the merge). The one field an overlay may not *change* is `qdrant_url`: it may supply
+one, but contradicting a cluster `lifecycle::init` already pinned is refused, because
+this instance's Qdrant credential and network allow-list are instance-wide. A baseline,
+when one exists at all, is stored in a process-wide
 `OnceLock` wrapped by `ConfigStore`, whose re-init policy is deliberately asymmetric: a
 second `init` call with an *identical* config is treated as a harmless reload and
 succeeds; a second call with a *different* config is rejected outright, because a

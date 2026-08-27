@@ -9,7 +9,7 @@ repository. This is a Greentic Designer **design** extension scaffolded by
 
 ## What this is
 
-- **id:** `greentic.rag-qdrant`  ·  **version:** `0.3.0`  ·  **kind:** `design`
+- **id:** `greentic.rag-qdrant`  ·  **version:** `0.4.0`  ·  **kind:** `design`
 - A WebAssembly component (target `wasm32-wasip2`) that the Greentic runtime loads
   as a signed `.gtxpack`.
 - Exposes six tools to both flow nodes and the agentic worker, backed by a Qdrant
@@ -42,7 +42,8 @@ repository. This is a Greentic Designer **design** extension scaffolded by
 - `src/qdrant.rs`         — Qdrant REST request builders and response parsers.
 - `src/embed.rs`          — OpenAI-shaped embeddings client (request/response).
 - `src/chunk.rs`          — character-window text splitting for `rag_ingest`.
-- `src/config.rs`         — operator configuration, parsed once in `lifecycle::init`.
+- `src/config.rs`         — configuration: the per-call `_tenant_overlay`, the optional
+                            `lifecycle::init` baseline, and the merge between them.
 - `src/error.rs`          — the extension's own error type; only `lib.rs` maps
   it onto the WIT `extension-error`, so no other module needs bindings.
 - `assets/views/knowledge/` — the contributed view (see below). Browser code,

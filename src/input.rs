@@ -25,36 +25,18 @@ fn empty_object() -> Value {
 /// The host's per-tenant configuration for this extension, delivered on every
 /// call under the reserved args key `_tenant_overlay`.
 ///
-/// This is the extension's *effective* config for the calling tenant — the
+/// This is this extension's *effective* config for the calling tenant — the
 /// operator baseline deep-merged with that tenant's override — resolved by the
-/// host from its own `extension_config` tables. It is emphatically **not**
-/// caller input: both hosts strip `_tenant_overlay` from the caller's
-/// arguments unconditionally and re-insert their own, including when a tenant
-/// has no override configured. That unconditional strip is what makes this
-/// trustworthy where the plain `collection` argument never can be — without
-/// it, a caller could smuggle an overlay naming another tenant's collection
-/// during the window when no override happened to be set.
+/// host from its own `extension_config` tables, and it is the channel the
+/// extension is actually configured through. The whole document is
+/// [`crate::config::ConfigOverlay`]; see it for why it is trustworthy, and
+/// [`crate::config::resolve`] for what outranks what.
 ///
-/// Every field is optional, and unknown keys are ignored rather than rejected:
-/// the blob's shape is this extension's to define, so a host that learns to
-/// send more of it must not break a guest that has not learned to read it yet.
-///
-/// Deliberately **not** cached in a `static`. The process-wide config
-/// `OnceLock` is per-instance; this is per-call, and one instance serves many
-/// tenants.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct TenantOverlay {
-    /// The collection this tenant's data lives in. When present it is
-    /// authoritative — see `ops::collection_of`.
-    #[serde(default)]
-    pub collection: Option<String>,
-    /// Present in a fully-merged overlay because it is part of the baseline.
-    /// This extension cannot honour a *differing* one — `qdrant_url` is read
-    /// straight off the process config by every request builder — so a
-    /// disagreement is refused rather than silently ignored.
-    #[serde(default)]
-    pub qdrant_url: Option<String>,
-}
+/// It is named separately here because from the argument structs' point of
+/// view it is a *reserved argument*, not a config file: parsed out of the same
+/// JSON the caller sent, and only safe because the host strips the caller's
+/// copy first.
+pub type TenantOverlay = crate::config::ConfigOverlay;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchInput {

@@ -122,35 +122,52 @@ impl tools::Guest for Component {
     }
 }
 
-/// Parse arguments, then run the operation. Argument parsing happens before the
-/// config lookup so a malformed call fails the same way whether or not `init`
-/// has run.
+/// Parse arguments, resolve this call's configuration, then run the operation.
+///
+/// Argument parsing happens first so a malformed call fails the same way
+/// whether or not the extension is configured — and because the configuration
+/// itself is *inside* the arguments: the host stamps this tenant's effective
+/// config onto every call as `_tenant_overlay`, and it can only be read once
+/// the arguments have been decoded. `config::installed()` is the optional
+/// `lifecycle::init` baseline underneath it, normally `None`; see
+/// [`config::resolve`] for the precedence.
+///
+/// The resolved `Config` is owned and per-call, not a borrow of a process-wide
+/// static: one instance serves many tenants and no two consecutive calls are
+/// guaranteed to belong to the same one.
 fn dispatch(name: &str, args_json: &str) -> Result<String, RagError> {
     let host = WitHost;
+    let base = config::installed();
     let value = match name {
         tool_meta::SEARCH_TOOL => {
             let input = input::parse_search(args_json)?;
-            ops::search(&host, config::current()?, &input)?
+            let cfg = config::resolve(base, input.tenant_overlay.as_ref())?;
+            ops::search(&host, &cfg, &input)?
         }
         tool_meta::UPSERT_TOOL => {
             let input = input::parse_upsert(args_json)?;
-            ops::upsert(&host, config::current()?, &input)?
+            let cfg = config::resolve(base, input.tenant_overlay.as_ref())?;
+            ops::upsert(&host, &cfg, &input)?
         }
         tool_meta::INGEST_TOOL => {
             let input = input::parse_ingest(args_json)?;
-            ops::ingest(&host, config::current()?, &input)?
+            let cfg = config::resolve(base, input.tenant_overlay.as_ref())?;
+            ops::ingest(&host, &cfg, &input)?
         }
         tool_meta::DELETE_TOOL => {
             let input = input::parse_delete(args_json)?;
-            ops::delete(&host, config::current()?, &input)?
+            let cfg = config::resolve(base, input.tenant_overlay.as_ref())?;
+            ops::delete(&host, &cfg, &input)?
         }
         tool_meta::ENSURE_TOOL => {
             let input = input::parse_ensure(args_json)?;
-            ops::ensure_collection(&host, config::current()?, &input)?
+            let cfg = config::resolve(base, input.tenant_overlay.as_ref())?;
+            ops::ensure_collection(&host, &cfg, &input)?
         }
         tool_meta::LIST_TOOL => {
             let input = input::parse_list(args_json)?;
-            ops::list(&host, config::current()?, &input)?
+            let cfg = config::resolve(base, input.tenant_overlay.as_ref())?;
+            ops::list(&host, &cfg, &input)?
         }
         other => return Err(RagError::InvalidInput(format!("unknown tool: {other}"))),
     };
@@ -285,6 +302,62 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, types::ExtensionError::InvalidInput(_)));
+    }
+
+    /// The bug this file's dispatch change exists to fix, pinned at the only
+    /// boundary the host actually calls.
+    ///
+    /// `lifecycle::init` has not run in this test binary and never will (see
+    /// `config`'s `no_baseline_is_installed_until_init_runs`), which is also
+    /// the state of every real deployment — the host runtime has no
+    /// init/configure entry point. Before this change every tool call in that
+    /// state died on "extension is not configured — lifecycle::init has not
+    /// run", naming an entry point the operator cannot invoke. It must now
+    /// name the console and the fields instead.
+    ///
+    /// Safe to run on the host: resolution fails before `ops` reaches a WIT
+    /// import, and a reached import would abort the whole test binary.
+    #[test]
+    fn an_unconfigured_call_is_refused_with_an_operator_actionable_message() {
+        let err = <Component as tools::Guest>::invoke_tool(
+            tool_meta::SEARCH_TOOL.to_string(),
+            r#"{"query":"anything"}"#.to_string(),
+        )
+        .unwrap_err();
+        let types::ExtensionError::InvalidInput(msg) = err else {
+            panic!("expected InvalidInput, got {err:?}");
+        };
+        assert!(msg.contains("admin console"), "message was: {msg}");
+        assert!(msg.contains("qdrant_url"), "message was: {msg}");
+        assert!(msg.contains("collection"), "message was: {msg}");
+        assert!(!msg.contains("lifecycle::init"), "message was: {msg}");
+    }
+
+    /// The other half: an overlay-only call gets *past* configuration with no
+    /// `lifecycle::init` anywhere, and the tenant-isolation refusal still
+    /// fires on the far side of it.
+    ///
+    /// Reaching that refusal is the proof — it lives in `ops::collection_of`,
+    /// after `config::resolve` has accepted the overlay as this call's whole
+    /// configuration. A call that fell at the configuration hurdle instead
+    /// would report the unconfigured error above, not this one.
+    #[test]
+    fn an_overlay_configures_the_call_and_the_isolation_refusal_still_fires() {
+        let err = <Component as tools::Guest>::invoke_tool(
+            tool_meta::SEARCH_TOOL.to_string(),
+            r#"{"vector":[0.1,0.2,0.3],"collection":"tenant-b",
+                "_tenant_overlay":{"qdrant_url":"https://t.qdrant.io:6333",
+                                   "collection":"tenant-a"}}"#
+                .to_string(),
+        )
+        .unwrap_err();
+        let types::ExtensionError::InvalidInput(msg) = err else {
+            panic!("expected InvalidInput, got {err:?}");
+        };
+        assert!(
+            msg.contains("tenant-b") && msg.contains("tenant-a"),
+            "expected the caller-collection refusal, got: {msg}"
+        );
     }
 
     #[test]
