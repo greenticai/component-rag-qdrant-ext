@@ -7,7 +7,7 @@ use crate::error::RagError;
 use crate::host::HttpRequest;
 
 /// Fixed namespace for chunk point ids. Any stable UUID works; this one is the
-/// RFC 4122 "X.500" namespace, chosen only because it is a constant nobody else
+/// RFC 4122 OID namespace, chosen only because it is a constant nobody else
 /// in this extension will reuse. Changing it orphans every existing point.
 const CHUNK_NAMESPACE: Uuid = Uuid::from_bytes([
     0x6b, 0xa7, 0xb8, 0x12, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8,
