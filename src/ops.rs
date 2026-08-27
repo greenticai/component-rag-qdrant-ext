@@ -1455,7 +1455,15 @@ mod tests {
         let RagError::InvalidInput(msg) = err else {
             panic!("expected InvalidInput, got {err:?}");
         };
-        assert!(msg.contains("admin console"), "message was: {msg}");
+        assert!(msg.contains("collection"), "message was: {msg}");
+        assert!(
+            msg.contains("operator") && msg.contains("baseline"),
+            "message was: {msg}"
+        );
+        assert!(
+            msg.contains("tenant") && msg.contains("override"),
+            "message was: {msg}"
+        );
         assert!(host.http.calls().is_empty());
     }
 }

@@ -313,7 +313,7 @@ mod tests {
     /// init/configure entry point. Before this change every tool call in that
     /// state died on "extension is not configured — lifecycle::init has not
     /// run", naming an entry point the operator cannot invoke. It must now
-    /// name the console and the fields instead.
+    /// name the fields and the scope they can be set at instead.
     ///
     /// Safe to run on the host: resolution fails before `ops` reaches a WIT
     /// import, and a reached import would abort the whole test binary.
@@ -327,9 +327,16 @@ mod tests {
         let types::ExtensionError::InvalidInput(msg) = err else {
             panic!("expected InvalidInput, got {err:?}");
         };
-        assert!(msg.contains("admin console"), "message was: {msg}");
         assert!(msg.contains("qdrant_url"), "message was: {msg}");
         assert!(msg.contains("collection"), "message was: {msg}");
+        assert!(
+            msg.contains("operator") && msg.contains("baseline"),
+            "message was: {msg}"
+        );
+        assert!(
+            msg.contains("tenant") && msg.contains("override"),
+            "message was: {msg}"
+        );
         assert!(!msg.contains("lifecycle::init"), "message was: {msg}");
     }
 

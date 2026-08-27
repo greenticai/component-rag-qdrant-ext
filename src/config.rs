@@ -180,17 +180,20 @@ pub struct ConfigOverlay {
 
 /// The error an operator sees when a call arrives with nothing configured.
 ///
-/// This is the message that reaches a browser, so it names the console, the
-/// screen and the two fields that actually have to be filled in. The old
-/// wording — "lifecycle::init has not run" — described a guest-internal
-/// mechanism the reader has no way to act on, and pointed at an entry point no
-/// host calls.
+/// This is the message that reaches a browser, so it names the two fields
+/// that actually have to be filled in and the scope each can be set at. It
+/// deliberately does not name a menu, button or screen: no configuration UI
+/// for this extension is wired up today (a generic one is being built
+/// separately, under a path not yet fixed), and a click-path invented here
+/// would rot the moment that UI lands under a different name. The values are
+/// reachable now only through the admin API. The old wording —
+/// "lifecycle::init has not run" — described a guest-internal mechanism the
+/// reader has no way to act on, and pointed at an entry point no host calls.
 pub(crate) fn not_configured(field: &str) -> RagError {
     RagError::InvalidInput(format!(
-        "config: no `{field}` is configured for this tenant. Open the admin console, \
-         go to Extensions → RAG (Qdrant) → Configuration, and set `qdrant_url` and \
-         `collection` — either as the operator baseline or as this tenant's override — \
-         then retry."
+        "config: no `{field}` is configured for this tenant. Set `qdrant_url` and \
+         `collection` in this extension's configuration — either as the operator \
+         baseline or as this tenant's override — then retry."
     ))
 }
 
@@ -636,7 +639,14 @@ mod tests {
         };
         assert!(msg.contains("qdrant_url"), "message was: {msg}");
         assert!(msg.contains("collection"), "message was: {msg}");
-        assert!(msg.contains("admin console"), "message was: {msg}");
+        assert!(
+            msg.contains("operator") && msg.contains("baseline"),
+            "message was: {msg}"
+        );
+        assert!(
+            msg.contains("tenant") && msg.contains("override"),
+            "message was: {msg}"
+        );
         // The old message pointed the operator at a guest-internal entry
         // point no host calls. It must not come back.
         assert!(!msg.contains("lifecycle::init"), "message was: {msg}");
@@ -648,7 +658,14 @@ mod tests {
         let RagError::InvalidInput(msg) = err else {
             panic!("expected InvalidInput");
         };
-        assert!(msg.contains("admin console"), "message was: {msg}");
+        assert!(
+            msg.contains("operator") && msg.contains("baseline"),
+            "message was: {msg}"
+        );
+        assert!(
+            msg.contains("tenant") && msg.contains("override"),
+            "message was: {msg}"
+        );
     }
 
     // ---- resolution: the cross-cluster refusal --------------------------
