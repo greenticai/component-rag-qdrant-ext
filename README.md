@@ -569,6 +569,8 @@ effects rather than between them.
 For the file-by-file inside view — what every module, manifest field and view
 asset does, a from-scratch build walkthrough, and what is and is not proven
 about the contributed view — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+To build your own RAG extension rather than read this one, see
+[docs/HOW-TO-MAKE-A-RAG-EXTENSION.md](docs/HOW-TO-MAKE-A-RAG-EXTENSION.md).
 
 The one rule that shapes every other file in `src/`: **every module is pure
 and host-testable except `src/lib.rs`.**
