@@ -45,6 +45,9 @@ repository. This is a Greentic Designer **design** extension scaffolded by
 - `src/config.rs`         — operator configuration, parsed once in `lifecycle::init`.
 - `src/error.rs`          — the extension's own error type; only `lib.rs` maps
   it onto the WIT `extension-error`, so no other module needs bindings.
+- `assets/views/knowledge/` — the contributed Designer view (see below). Browser
+  code, not Rust: `index.html`, `style.css`, `app.js`, `pdf.js` (a
+  dependency-free PDF text extractor) and `bridge.js`.
 - `wit/`                 — WIT contract, vendored by `gtdx new` (see `.gtdx-contract.lock`)
 - `i18n/en.json`         — user-facing strings
 - `build.sh`             — compile the wasm
@@ -122,6 +125,15 @@ They are ordinary in-memory objects (`MockHttpClient`, `MockSecretsBackend`,
 parameter rather than calling the binding directly. Structure it that way and
 the logic stays testable on the host.
 
+**`cargo test` does not cover `assets/views/knowledge/`.** That code is browser
+JavaScript; nothing in the Rust gate loads it, so a green `ci/local_check.sh`
+says nothing about the view. Exercising it means a host: serve the directory and
+embed `index.html` in an `<iframe sandbox="allow-scripts">` (no
+`allow-same-origin` — the opaque origin is the whole point) from a page that
+speaks the v1 `postMessage` protocol in `bridge.js` and answers `invokeTool`
+with canned tool results. `gtdx lint` and `gtdx validate` still run in the gate
+below and do catch the manifest-level mistakes.
+
 ## Self-check before publishing
 
 Beyond the Rust gate above, validate the manifest with gtdx — these catch a broken
@@ -158,6 +170,31 @@ is no leftover scaffold value to hunt down:
 
 If you're using this repo as a reference for a new extension, the pattern to
 copy is the pure/host-boundary module split in Layout above, not this list.
+
+## The contributed view (`assets/views/knowledge/`)
+
+`contributions.views[]` declares one Designer page for curating the knowledge
+base — list, upload, delete, search. Read
+[README.md § Knowledge base view](README.md#knowledge-base-view) before you
+change anything in there. The rules that are easy to break by accident:
+
+- **`bridge.js` is copied byte-for-byte from the SDK scaffold. Do not edit it.**
+  Its `message` handler checks `event.source === window.parent` and
+  deliberately *not* `event.origin`, because the page's opaque origin arrives
+  as the literal string `"null"`.
+- **No remote assets.** `gtdx lint` rejects a remote `<script src>`/`<img src>`/
+  `<link href>` in the entry HTML with `E_VIEW_REMOTE_ASSET`. No CDN, so no
+  framework — plain JS on purpose. Lint only scans the entry HTML, so a URL
+  built at runtime in `app.js` would evade it; don't add one.
+- **Never `innerHTML` anything tool-derived**, and never `window.confirm` /
+  `window.alert` (a native modal blocks the frame's event loop and strands
+  every bridge reply). Confirmation is in-page.
+- **The page must not send a `collection` argument.** See
+  [README.md § Collections and tenancy](README.md#collections-and-tenancy).
+- `runtime.permissions.ui` is intentionally empty: the page only uses
+  `invokeTool`, which is authorised by `views[].tools`, not by `ui`.
+- After changing any of it: `gtdx lint` **and** `gtdx validate` (lint works from
+  raw JSON and will not catch a bad `views[].tools` entry; validate will).
 
 ## Secrets
 

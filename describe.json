@@ -58,7 +58,11 @@
         "secret://rag-qdrant/qdrant_api_key",
         "secret://rag-qdrant/embedding_api_key"
       ],
-      "callExtensionKinds": []
+      "callExtensionKinds": [],
+      "ui": {
+        "fetchHosts": [],
+        "platformApi": []
+      }
     }
   },
   "requiredSecrets": [
@@ -213,6 +217,26 @@
             "key": "rag-qdrant/embedding_api_key",
             "required": true
           }
+        ]
+      }
+    ],
+    "views": [
+      {
+        "id": "knowledge",
+        "surface": "designer",
+        "title_key": "view.knowledge.label",
+        "title_fallback": "Knowledge base",
+        "entry": "index.html",
+        "placement": {
+          "slot": "designer.sidebar",
+          "order": 20
+        },
+        "min_visibility": "tenant_admin",
+        "tools": [
+          "rag_list",
+          "rag_ingest",
+          "rag_delete",
+          "rag_search"
         ]
       }
     ]

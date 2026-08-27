@@ -341,6 +341,134 @@ leaving only the caller's original `metadata`.
 }
 ```
 
+## Knowledge base view
+
+`describe.json` contributes one UI page under `contributions.views[]`:
+
+```json
+{
+  "id": "knowledge",
+  "surface": "designer",
+  "title_key": "view.knowledge.label",
+  "title_fallback": "Knowledge base",
+  "entry": "index.html",
+  "placement": { "slot": "designer.sidebar", "order": 20 },
+  "min_visibility": "member",
+  "tools": ["rag_list", "rag_ingest", "rag_delete", "rag_search"]
+}
+```
+
+It exists so someone who will never call a tool by hand can still curate the
+knowledge base: list what is stored, upload a document, delete one, and search.
+Its assets live in `assets/views/knowledge/` and ship inside the `.gtxpack`,
+with a sha256 per file in `manifest.json`.
+
+**A view is declared per surface.** `surface` takes one value and `entry` may
+not escape `assets/views/<id>/`, so rendering the same page in the Admin
+console as well means a *second* entry with its own id and its own directory.
+This repo ships the Designer one only.
+
+### What the page may reach
+
+Nothing directly. It runs in an iframe with `sandbox="allow-scripts"` and no
+`allow-same-origin`, so it has an opaque origin: no host cookies, no
+`localStorage`, no parent DOM, and its own `fetch()` would send `Origin: null`.
+Every byte it displays arrives through `window.greentic.invokeTool`, which the
+host executes with the *viewer's* permissions — so the page can never see more
+than the person looking at it could see by hand, and no credential ever crosses
+into the browser.
+
+`runtime.permissions.ui` is therefore declared empty:
+
+```json
+"ui": { "fetchHosts": [], "platformApi": [] }
+```
+
+That is not an oversight. `ui` grants only two things — a server-side proxied
+`greentic.fetch` and platform REST via `greentic.callApi` — and this page uses
+neither. The right to call the four tools comes from `views[].tools`, not from
+`ui`. `rag_upsert` and `rag_collection_ensure` are deliberately absent: the page
+never needs them, and `rag_ingest` ensures the collection itself.
+
+Because the page is fed attacker-influenced strings — anyone who can ingest
+chooses a `doc_id`, the document text and the metadata — everything
+tool-derived is written with `textContent` and never `innerHTML`. Script
+injected into this frame would inherit the bridge, and with it the right to
+call every tool the view declares.
+
+### Reading files in the browser
+
+The host exposes no filesystem, and `rag_ingest` takes text. So the page does
+the conversion itself, before anything is sent:
+
+| Format | Handling |
+|---|---|
+| `.txt`, `.text` | Decoded as UTF-8 strictly; falls back to Windows-1252 with a visible warning. Bytes containing NUL are rejected as binary. |
+| `.md`, `.markdown`, `.mdown`, `.mkd` | Same as plain text; the Markdown is ingested as-is. |
+| `.pdf` | Text extracted in-page by `pdf.js` — see below. |
+| anything else | Rejected by name, with a message naming the formats that do work. |
+
+`assets/views/knowledge/pdf.js` is a dependency-free PDF text extractor: it
+inflates `/FlateDecode` streams with the browser's own `DecompressionStream`,
+walks the page tree (including `/ObjStm` object streams and PNG predictors),
+and maps glyphs to Unicode via `/ToUnicode` CMaps, then `/Differences`
+encodings, then the standard Latin encodings. **It rejects rather than
+guesses**, because a mangled decode ingested into a knowledge base is close to
+undetectable afterwards — it looks fine in a listing and only ever shows up as
+bad search results. Encrypted PDFs, PDFs with no text layer (scans), and any
+extraction whose decoding confidence falls below the threshold are refused with
+a plain-English reason instead of being ingested. Identity-H CID fonts with no
+`/ToUnicode` map are not recoverable and fail this check by design.
+
+Whatever the format, the extracted text is shown in a preview **before** the
+user commits, so an imperfect extraction is caught by a human rather than
+silently stored.
+
+### Things worth knowing before you change it
+
+- **No remote assets, ever.** `gtdx lint` fails a remote `<script src>`,
+  `<img src>` or `<link href>` in the entry HTML with `E_VIEW_REMOTE_ASSET`:
+  the manifest sha256 would otherwise cover a file that pulls unverified code
+  at runtime. That rules out a CDN and therefore any framework — the page is
+  plain JS on purpose. Note the rule only scans the entry HTML, so a remote
+  URL assembled at runtime inside `app.js` would slip past it; don't.
+- **`bridge.js` is copied byte-for-byte from the SDK scaffold.** Its
+  `postMessage` handler checks `event.source === window.parent` and
+  deliberately *not* `event.origin`, because an opaque origin arrives as the
+  literal string `"null"` and a forged message would look identical by that
+  measure. Do not "fix" it.
+- **No `window.confirm` / `window.alert`.** A native modal blocks the frame's
+  event loop, and with it the `message` handler every bridge reply arrives on;
+  each in-flight call would then time out. Delete confirmation is in-page for
+  this reason.
+- **Every bridge call times out after 10 seconds**, `rag_ingest` included.
+  `rag_ingest` embeds all of a document's chunks in one request before it
+  writes, so a long document can exceed that. The page warns above ~150k
+  characters and, on a timeout, says the ingest may have succeeded anyway and
+  to refresh — which is true, and safe to retry, because re-ingesting a
+  `doc_id` replaces rather than duplicates.
+- **Large files must not freeze the tab.** File reading and PDF extraction
+  yield to the event loop and report progress; the preview is capped.
+
+### Collections and tenancy
+
+**The page never sends a `collection` argument.** Every tool accepts one as an
+override, and the page deliberately declines to use it, letting each call fall
+back to the collection from operator config.
+
+That is a correctness decision, not a convenience one. `collection` and
+`qdrant_url` both come from the single `Config` that `lifecycle::init` stores
+in a process-wide `OnceLock` (`src/config.rs`), and a second `init` carrying
+*different* settings is rejected rather than honoured. There is no tenant in
+`init`, and no tenant in any tool's arguments. So a collection chosen in the
+browser would be a client-supplied target with nothing checking it — the
+opposite of an isolation boundary. Per-tenant secret resolution does not close
+this either: it varies the API key while `qdrant_url` and `collection` stay
+shared, so every tenant would be pointed at the same collection.
+
+Isolating tenants therefore has to happen host-side, by stamping the caller's
+tenant into the call — not in this page, and not by having the UI pick a name.
+
 ## Architecture
 
 The one rule that shapes every other file in `src/`: **every module is pure
@@ -476,8 +604,12 @@ copying along with the code.
   (The wildcard is verified against the SDK's host mock, which matches on
   host only; if a runtime instead matches on the full URL including port, a
   `:6333` variant of the pattern may be needed.)
-- **Ingestion takes text, not files.** The host exposes no filesystem, so PDF
-  and DOCX must be converted to text before calling `rag_ingest`.
+- **Ingestion takes text, not files.** The host exposes no filesystem, so
+  `rag_ingest` is given text, never a file. The contributed
+  [knowledge base view](#knowledge-base-view) works around this for the formats
+  a browser can read — it extracts plain text, Markdown and PDF in the page and
+  sends the text — but a caller driving `rag_ingest` from a flow must convert
+  first, and DOCX is not supported anywhere.
 - **Designer 1.2.0 or newer** (`compat.min_designer_version`). The published
   designer at 0.6.0 cannot run this extension.
 
@@ -505,6 +637,10 @@ gtdx publish       # produce dist/greentic.rag-qdrant-<version>.gtxpack + instal
 - `src/input.rs`, `src/qdrant.rs`, `src/embed.rs`, `src/chunk.rs`, `src/config.rs`, `src/error.rs`
   — pure modules: argument parsing, Qdrant request/response handling, the
   embeddings client, text chunking, operator config, and the error type
+- `assets/views/knowledge/` — the contributed Designer view: `index.html`,
+  `style.css`, `app.js`, the dependency-free `pdf.js` text extractor, and
+  `bridge.js` (copied verbatim from the SDK scaffold — see
+  [Knowledge base view](#knowledge-base-view))
 - `wit/`          — WIT contract (vendored by `gtdx new`; see `.gtdx-contract.lock`)
 - `i18n/en.json`  — user-facing strings
 - `AGENTS.md`     — guidance for AI coding agents (Claude Code, Codex, …); see
