@@ -1,6 +1,6 @@
 # component-rag-qdrant-ext
 
-A Greentic Designer **design** extension exposing five RAG tools — over both
+A Greentic Designer **design** extension exposing six RAG tools — over both
 flow nodes and the agentic worker — backed by a Qdrant vector collection:
 
 - `rag_search` — semantic search by query text or a pre-computed vector.
@@ -10,12 +10,13 @@ flow nodes and the agentic worker — backed by a Qdrant vector collection:
   duplicated or orphaned.
 - `rag_delete` — delete points by id, or every chunk of one `doc_id`.
 - `rag_collection_ensure` — create the collection if it does not exist yet.
+- `rag_list` — enumerate stored documents, grouped by `doc_id`, with pagination.
 
 Text is embedded through a configurable OpenAI-shaped embeddings API; callers
 that already hold a vector can pass it directly instead.
 
 - id: `greentic.rag-qdrant`
-- version: `0.1.0`
+- version: `0.2.0`
 - contract: `greentic:extension-design@0.3.0`
 
 ## Configuration
@@ -64,17 +65,24 @@ gtdx dev           # watch, rebuild, and reinstall to local registry on save
 ## Publish
 
 ```
-gtdx publish       # produce dist/greentic.rag-qdrant-0.1.0.gtxpack + install to local registry
+gtdx publish       # produce dist/greentic.rag-qdrant-<version>.gtxpack + install to local registry
 ```
 
 ## Layout
 
 - `describe.json` — extension manifest
-- `src/lib.rs`    — WASM guest exports
-- `src/ops.rs`    — Qdrant/embeddings HTTP calls and secret handling
+- `src/lib.rs`    — WIT glue: the only module that touches `crate::bindings`;
+  dispatches each tool to `ops.rs`
+- `src/host.rs`   — the `HostCalls` trait standing in for WIT host calls in tests
+- `src/ops.rs`    — orchestration: the only module that sequences more than one
+  host call per tool
 - `src/tool_meta.rs` — static tool metadata (schemas, capabilities, agentic-worker hints); also generates `describe.json`'s `contributions.tools` block
+- `src/input.rs`, `src/qdrant.rs`, `src/embed.rs`, `src/chunk.rs`, `src/config.rs`, `src/error.rs`
+  — pure modules: argument parsing, Qdrant request/response handling, the
+  embeddings client, text chunking, operator config, and the error type
 - `wit/`          — WIT contract (vendored by `gtdx new`; see `.gtdx-contract.lock`)
 - `i18n/en.json`  — user-facing strings
-- `AGENTS.md`     — guidance for AI coding agents (Claude Code, Codex, …)
+- `AGENTS.md`     — guidance for AI coding agents (Claude Code, Codex, …); see
+  it for the pure/host-boundary module split and why it matters
 - `CLAUDE.md`     — Claude Code entry point (points to `AGENTS.md`)
 - `.claude/`      — Claude Code config: pre-approved build perms + `/check` command
