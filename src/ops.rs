@@ -40,7 +40,12 @@ fn secret<H: HostCalls>(host: &H, uri: &str) -> Result<String, RagError> {
 ///    and unforgeable (see [`TenantOverlay`]), so it is the isolation
 ///    boundary and nothing a caller says may move it.
 /// 2. the caller's `collection` argument — only when no overlay pins one.
-/// 3. `collection` from the operator config parsed in `lifecycle::init`.
+/// 3. `cfg.collection`, which [`crate::config::resolve`] has already filled in
+///    from the overlay or from a `lifecycle::init` baseline. By the time it
+///    gets here, step 1 and step 3 may well be the same string — step 1 still
+///    reads the overlay directly, because whether the overlay *pinned* a
+///    collection is what decides the refusal below, and a merged value can no
+///    longer be traced back to its source.
 ///
 /// **Any caller `collection` is refused while an overlay pins one, even one
 /// that matches.** Ignoring a disagreement silently would let a flow author
@@ -59,8 +64,9 @@ fn secret<H: HostCalls>(host: &H, uri: &str) -> Result<String, RagError> {
 ///
 /// # Errors
 /// [`RagError::InvalidInput`] if the caller passed `collection` while the
-/// overlay pins one, if the overlay's collection is blank, or if the overlay
-/// carries a `qdrant_url` this extension cannot honour.
+/// overlay pins one, if the overlay's collection is blank, if no collection is
+/// configured at all, or if the overlay carries a `qdrant_url` that is not the
+/// one `cfg` was resolved with.
 /// [`RagError::PermissionDenied`] if the operator requires a tenant overlay
 /// and none arrived.
 fn collection_of<'a>(
@@ -70,20 +76,24 @@ fn collection_of<'a>(
 ) -> Result<&'a str, RagError> {
     let pinned = overlay.and_then(|o| o.collection.as_deref());
 
-    // The overlay is the effective config, so in a fully-merged one this key
-    // is present and equals the baseline. A *differing* value means the
-    // operator is isolating tenants by cluster rather than by collection —
-    // which every request builder here would ignore, because it reads
-    // `cfg.qdrant_url` directly. Reading one tenant's collection name off the
-    // wrong cluster is precisely the cross-tenant read to refuse.
+    // Every request builder below reads `cfg.qdrant_url`, so this tenant's
+    // collection must only ever be addressed on the cluster this call's own
+    // overlay named. `config::resolve` guarantees that: when the overlay
+    // carries a url, the resolved `cfg.qdrant_url` *is* it (or resolution
+    // already refused, because `lifecycle::init` had pinned a different one).
+    //
+    // Keeping the comparison here anyway costs one string compare and closes
+    // the gap that would open the moment someone hands this function a `cfg`
+    // resolved from a *different* call's overlay: a mismatch would mean
+    // reading one tenant's collection name off another tenant's cluster,
+    // which is exactly the cross-tenant read this ordering exists to prevent.
     if let Some(url) = overlay.and_then(|o| o.qdrant_url.as_deref())
-        && url != cfg.qdrant_url
+        && url.trim().trim_end_matches('/') != cfg.qdrant_url
     {
         return Err(RagError::InvalidInput(format!(
-            "tenant overlay sets qdrant_url {url:?}, which differs from this instance's \
-             configured {:?}. This extension reads the cluster URL from its own config, so it \
-             cannot serve a per-tenant cluster; isolate tenants by collection instead, or run \
-             one instance per cluster.",
+            "tenant overlay sets qdrant_url {url:?}, which is not the {:?} this call was \
+             configured with. Refusing rather than reading this tenant's collection off \
+             another cluster.",
             cfg.qdrant_url
         )));
     }
@@ -117,7 +127,14 @@ fn collection_of<'a>(
                         .into(),
                 ));
             }
-            Ok(override_.map_or(cfg.collection.as_str(), String::as_str))
+            let chosen = override_.map_or(cfg.collection.as_str(), String::as_str);
+            // Nothing named a collection: no overlay, no argument, and no
+            // baseline. Addressing `/collections//points/...` would be a
+            // confusing 404 from Qdrant; say what to configure instead.
+            if chosen.trim().is_empty() {
+                return Err(crate::config::not_configured("collection"));
+            }
+            Ok(chosen)
         }
     }
 }
@@ -1308,17 +1325,137 @@ mod tests {
     }
 
     /// Forward compatibility: a host that learns to send more of the config
-    /// must not break a guest that only reads part of it.
+    /// must not break a guest that has not learned to read that key yet.
     #[test]
     fn unknown_keys_inside_the_overlay_are_ignored() {
         let body =
             serde_json::json!({"result": {"points": [], "next_page_offset": null}}).to_string();
         let host = list_host(ok(&body), "tenant-a");
         let input = crate::input::parse_list(
-            r#"{"_tenant_overlay":{"collection":"tenant-a","embedding":{"dimensions":1536},"future_key":true}}"#,
+            r#"{"_tenant_overlay":{"collection":"tenant-a","future_key":{"nested":true}}}"#,
         )
         .unwrap();
         list(&host, &cfg(), &input).unwrap();
         assert!(host.http.calls()[0].url.contains("/collections/tenant-a/"));
+    }
+
+    // ---- configured entirely by the overlay -----------------------------
+    //
+    // No `lifecycle::init` anywhere: the config these run against is built the
+    // way `dispatch` builds it, from the overlay alone. The tests above pass a
+    // hand-written `cfg()` and so cannot show that a real deployment — where
+    // the only configuration that exists is the one stamped onto the call —
+    // reaches Qdrant at all.
+
+    /// The end-to-end shape of the fix: an overlay names the cluster and the
+    /// collection, and the request lands on both.
+    #[test]
+    fn an_overlay_alone_configures_a_call_that_reaches_the_right_cluster() {
+        let cfg = crate::config::resolve(
+            None,
+            Some(
+                &serde_json::from_str(
+                    r#"{"qdrant_url":"https://tenant-a.qdrant.io:6333","collection":"tenant-a-kb"}"#,
+                )
+                .unwrap(),
+            ),
+        )
+        .expect("an overlay carrying a url and a collection is a complete configuration");
+
+        let http = MockHttpClient::new();
+        let secrets = MockSecretsBackend::new();
+        secrets.set(QDRANT_KEY_REF, "qk");
+        let body =
+            serde_json::json!({"result": {"points": [], "next_page_offset": null}}).to_string();
+        http.expect(
+            "POST",
+            "https://tenant-a.qdrant.io:6333/collections/tenant-a-kb/points/scroll",
+            ok(&body),
+        );
+        let host = TestHost { http, secrets };
+
+        let input = crate::input::parse_list(
+            r#"{"_tenant_overlay":{"qdrant_url":"https://tenant-a.qdrant.io:6333","collection":"tenant-a-kb"}}"#,
+        )
+        .unwrap();
+        list(&host, &cfg, &input).unwrap();
+        assert_eq!(
+            host.http.calls()[0].url,
+            "https://tenant-a.qdrant.io:6333/collections/tenant-a-kb/points/scroll"
+        );
+    }
+
+    /// Two tenants, two clusters, one instance — each call configured by its
+    /// own overlay. Nothing may leak from the first call into the second, so
+    /// the config must be per-call and never cached in a static.
+    #[test]
+    fn two_overlays_in_a_row_are_not_confused_with_one_another() {
+        for (host_name, collection) in [
+            ("tenant-a.qdrant.io", "tenant-a-kb"),
+            ("tenant-b.qdrant.io", "tenant-b-kb"),
+        ] {
+            let url = format!("https://{host_name}:6333");
+            let json = format!(
+                r#"{{"_tenant_overlay":{{"qdrant_url":"{url}","collection":"{collection}"}}}}"#
+            );
+            let input = crate::input::parse_list(&json).unwrap();
+            let cfg =
+                crate::config::resolve(None, input.tenant_overlay.as_ref()).expect("must resolve");
+
+            let http = MockHttpClient::new();
+            let secrets = MockSecretsBackend::new();
+            secrets.set(QDRANT_KEY_REF, "qk");
+            let body =
+                serde_json::json!({"result": {"points": [], "next_page_offset": null}}).to_string();
+            let expected = format!("{url}/collections/{collection}/points/scroll");
+            http.expect("POST", &expected, ok(&body));
+            let host = TestHost { http, secrets };
+
+            list(&host, &cfg, &input).unwrap();
+            assert_eq!(host.http.calls()[0].url, expected);
+        }
+    }
+
+    /// An overlay-configured call with `require_tenant_overlay` in the
+    /// operator baseline still refuses when that overlay names no collection —
+    /// the flag's remaining bite, now that the overlay is also the config.
+    #[test]
+    fn an_overlay_without_a_collection_still_trips_require_tenant_overlay() {
+        let input = crate::input::parse_search(
+            r#"{"vector":[0.1,0.2,0.3],
+                "_tenant_overlay":{"qdrant_url":"https://c.qdrant.io:6333",
+                                   "require_tenant_overlay":true}}"#,
+        )
+        .unwrap();
+        // Resolved exactly as `dispatch` resolves it: from this call's own
+        // overlay, with no `lifecycle::init` baseline underneath.
+        let cfg = crate::config::resolve(None, input.tenant_overlay.as_ref()).unwrap();
+
+        let host = happy_host(1);
+        let err = search(&host, &cfg, &input).unwrap_err();
+        assert!(matches!(err, RagError::PermissionDenied(_)), "got {err:?}");
+        assert!(host.http.calls().is_empty());
+    }
+
+    /// Nothing configured anywhere: no overlay collection, no argument, no
+    /// baseline. The operator must be told what to fill in, not handed a
+    /// request to `/collections//points/...`.
+    #[test]
+    fn a_call_with_no_collection_from_any_source_names_what_to_configure() {
+        let input = crate::input::parse_search(
+            r#"{"vector":[0.1,0.2,0.3],
+                "_tenant_overlay":{"qdrant_url":"https://c.qdrant.io:6333"}}"#,
+        )
+        .unwrap();
+        let cfg = crate::config::resolve(None, input.tenant_overlay.as_ref()).unwrap();
+        assert_eq!(cfg.collection, "", "nothing named a collection");
+
+        let host = happy_host(1);
+        let err = search(&host, &cfg, &input).unwrap_err();
+        let RagError::InvalidInput(msg) = err else {
+            panic!("expected InvalidInput, got {err:?}");
+        };
+        assert!(msg.contains("admin console"), "message was: {msg}");
+        assert!(host.http.calls().is_empty());
     }
 }

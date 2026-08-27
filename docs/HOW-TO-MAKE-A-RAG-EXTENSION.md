@@ -340,17 +340,19 @@ failure and quietly changing how a caller is expected to react to it.
 
 ## 7. Operator configuration
 
-`src/config.rs` is parsed once, from the JSON body `lifecycle::init`
-receives, and stored in a process-wide `OnceLock`:
+`src/config.rs` holds the wire shape (every field optional — it is what the
+host stamps onto each call as `_tenant_overlay`, and also what the optional
+`lifecycle::init` receives) and the resolved shape it merges into. Do not build
+this around `lifecycle::init` alone: no host calls it. The resolved shape is:
 
 ```rust
+/// The outcome of resolution: every field present, every field validated.
+/// Not `Deserialize` — nothing ever arrives in this shape.
 pub struct Config {
     pub qdrant_url: String,
     pub collection: String,
     pub embedding: EmbeddingConfig,
-    #[serde(default)]
     pub chunk: ChunkConfig,
-    #[serde(default)]
     pub require_tenant_overlay: bool,
 }
 
@@ -359,6 +361,23 @@ pub struct EmbeddingConfig {
     pub model: String,
     pub dimensions: u32,
 }
+
+/// The wire shape, on both channels. `Deserialize`, all-optional, unknown keys
+/// ignored — a tenant override sets only the fields it changes, and a host that
+/// learns to send more must not break a guest that has not learned to read it.
+#[derive(Deserialize)]
+pub struct ConfigOverlay {
+    pub qdrant_url: Option<String>,
+    pub collection: Option<String>,
+    pub embedding: Option<EmbeddingOverlay>,
+    pub chunk: Option<ChunkOverlay>,
+    pub require_tenant_overlay: Option<bool>,
+}
+
+pub fn resolve(
+    base: Option<&Config>,             // the optional lifecycle::init baseline
+    overlay: Option<&ConfigOverlay>,   // this call's _tenant_overlay
+) -> Result<Config, RagError>;
 ```
 
 `EmbeddingConfig` exists purely because of step 4 — base URL, model, and
@@ -628,14 +647,17 @@ and dispatching each tool name to the matching `ops::*` function.
 ```rust
 fn dispatch(name: &str, args_json: &str) -> Result<String, RagError> {
     let host = WitHost;
+    let base = config::installed(); // the optional lifecycle::init baseline; normally None
     let value = match name {
         tool_meta::SEARCH_TOOL => {
             let input = input::parse_search(args_json)?;
-            ops::search(&host, config::current()?, &input)?
+            let cfg = config::resolve(base, input.tenant_overlay.as_ref())?;
+            ops::search(&host, &cfg, &input)?
         }
         tool_meta::INGEST_TOOL => {
             let input = input::parse_ingest(args_json)?;
-            ops::ingest(&host, config::current()?, &input)?
+            let cfg = config::resolve(base, input.tenant_overlay.as_ref())?;
+            ops::ingest(&host, &cfg, &input)?
         }
         // ... the remaining four tools, same shape
         other => return Err(RagError::InvalidInput(format!("unknown tool: {other}"))),
@@ -644,11 +666,11 @@ fn dispatch(name: &str, args_json: &str) -> Result<String, RagError> {
 }
 ```
 
-Note the order inside each arm: **parse arguments before looking up
-config.** `config::current()?` fails with `InvalidInput` if `lifecycle::init`
-hasn't run yet — but a malformed call should fail the same way whether or
-not the host has configured the extension, so argument parsing happens
-first regardless.
+Note the order inside each arm: **parse arguments before resolving config.**
+That order is forced here, not stylistic — the configuration is *inside* the
+arguments, under the host-stamped `_tenant_overlay` key, so it cannot be read
+until they are decoded. It is also what you want anyway: a malformed call should
+fail the same way whether or not the extension is configured.
 
 `lifecycle::Guest::init` is one line of real logic — parse, then store:
 

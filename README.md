@@ -7,7 +7,7 @@ flow nodes and the agentic worker — backed by a Qdrant vector collection:
 API; callers that already hold a vector can pass it directly instead.
 
 - id: `greentic.rag-qdrant`
-- version: `0.3.0`
+- version: `0.4.0`
 - contract: `greentic:extension-design@0.3.0`
 - published: `greentic.rag-qdrant@0.3.0` on the Greentic store
 
@@ -57,8 +57,16 @@ or it fails with `cannot find export in bindings`.
 
 ### Configure
 
-A host loading this extension calls `lifecycle::init` with a JSON body shaped
-like the [Configuration](#configuration) table below, e.g.:
+Configuration arrives **per call**, from the host. Both hosts stamp a reserved
+argument — `_tenant_overlay` — onto every tool call, carrying this extension's
+*effective* configuration for the calling tenant: the operator baseline
+deep-merged with that tenant's override, resolved from the admin console's
+`extension_config` tables. So the place to configure this extension is:
+
+> **Admin console → Extensions → RAG (Qdrant) → Configuration**
+
+with a JSON document shaped like the [Configuration](#configuration) table
+below, e.g.:
 
 ```json
 {
@@ -71,6 +79,14 @@ like the [Configuration](#configuration) table below, e.g.:
   }
 }
 ```
+
+`lifecycle::init` takes the same document as a process-wide baseline and is
+still supported — but it is **optional, and unused in practice**: the host
+runtime exposes `invoke-tool`, `evaluate-guardrail` and `validate-content`, and
+no init/configure entry point at all, so nothing calls it. Where both exist, the
+per-call overlay wins field by field; the one exception is `qdrant_url`, which an
+overlay may supply but may not use to contradict an `init` that already pinned
+the cluster. See [Collections and tenancy](#collections-and-tenancy).
 
 ### Secrets
 
@@ -92,7 +108,7 @@ embeddings API instead of the network:
 cargo test ingest_deletes_the_document_before_upserting_its_chunks -- --nocapture
 ```
 
-or run everything with `cargo test` (115 tests, milliseconds, no WASM runtime
+or run everything with `cargo test` (134 tests, milliseconds, no WASM runtime
 involved — see [Testing](#testing)). To call a tool for real, install the
 built `.gtxpack` (above) into a Designer or agentic worker instance and give
 it the config and secrets above — that step happens outside this repo.
@@ -105,18 +121,26 @@ gtdx validate && gtdx lint
 
 ## Configuration
 
-Passed to `lifecycle::init` as JSON:
+The same JSON document on both channels — the per-call `_tenant_overlay` and,
+optionally, `lifecycle::init`. Every field is optional on each channel
+individually; what matters is that `qdrant_url` and `collection` are set
+*somewhere* by the time a call arrives. Unknown keys are ignored, so a host may
+send more of the document than this version reads.
 
 | Field | Required | Default | Notes |
 |---|---|---|---|
-| `qdrant_url` | yes | — | e.g. `https://xyz.qdrant.io:6333`. Trailing slash is stripped. |
-| `collection` | yes | — | Fallback collection, used when the host sends no per-tenant one. See [Collections and tenancy](#collections-and-tenancy). |
-| `embedding.base_url` | yes | — | `/embeddings` is appended. Any OpenAI-shaped API. |
-| `embedding.model` | yes | — | e.g. `text-embedding-3-small`. |
-| `embedding.dimensions` | yes | — | Must match the collection's vector width. |
+| `qdrant_url` | yes | — | e.g. `https://xyz.qdrant.io:6333`. Trailing slash is stripped. An overlay may set it; it may not contradict one an `init` already pinned. |
+| `collection` | yes | — | The collection this tenant's data lives in. See [Collections and tenancy](#collections-and-tenancy). |
+| `embedding.base_url` | no | `https://api.openai.com/v1` | `/embeddings` is appended. Any OpenAI-shaped API. |
+| `embedding.model` | no | `text-embedding-3-small` | |
+| `embedding.dimensions` | no | `1536` | Must match the collection's vector width. |
 | `chunk.max_chars` | no | `1200` | Characters, not bytes. |
 | `chunk.overlap_chars` | no | `150` | Must be less than `max_chars`. |
 | `require_tenant_overlay` | no | `false` | Refuse any call the host did not stamp a tenant collection onto, instead of falling back to `collection`. **Turn this on for a multi-tenant install** — see [Collections and tenancy](#collections-and-tenancy). |
+
+Configure nothing and every tool call is refused with a message naming the
+console, the screen and the two fields to fill in — not the old
+`lifecycle::init has not run`, which named an entry point no operator can reach.
 
 ## Secrets
 
@@ -532,11 +556,16 @@ unconditional strip is what makes it trustworthy: without it, a page could
 smuggle `_tenant_overlay: {"collection": "someone-elses"}` during the window
 when no override happened to be set.
 
-`collection_of()` in `src/ops.rs` therefore resolves, highest first:
+The overlay is therefore both the *configuration* channel and the isolation
+boundary. `config::resolve()` merges it over the optional `lifecycle::init`
+baseline field by field — overlay wins, because it is the more specific and more
+recent statement of the same thing, and it already contains the operator
+baseline an `init` would have carried. `collection_of()` in `src/ops.rs` then
+resolves the collection, highest first:
 
 1. `_tenant_overlay.collection` — host-set, unforgeable, the isolation boundary.
 2. the caller's `collection` argument — only when no overlay pins one.
-3. `collection` from the operator config.
+3. `collection` from the merged config (the overlay's, or an `init` baseline's).
 
 **A caller `collection` is refused whenever the overlay pins one — even when it
 matches.** Silently ignoring a disagreement would let a flow author believe they
@@ -563,16 +592,22 @@ effects rather than between them.
   **`require_tenant_overlay: true`** on any multi-tenant install: unstamped
   calls are then refused rather than quietly falling back. It is off by default
   only because turning it on would break every single-tenant install.
-- **Only `collection` is applied from the overlay.** If an operator isolates
-  tenants by *cluster* instead, a differing `_tenant_overlay.qdrant_url` is
-  **refused** with a clear error rather than ignored — every request builder
-  here reads `qdrant_url` off the process config, so honouring the collection
-  while silently using the baseline cluster would be exactly the cross-tenant
-  read to avoid. An overlay that merely repeats the configured URL is accepted.
-- **`embedding` and `chunk` in the overlay are ignored.** A tenant that
-  overrides `embedding.dimensions` would get vectors of the process-wide width;
-  Qdrant rejects a wrong-width write, so this fails loudly rather than
-  corrupting an index — but it is not *supported*.
+- **An overlay may not move a cluster that `lifecycle::init` pinned.** Where no
+  `init` ran — every real deployment today — the overlay's `qdrant_url` *is* the
+  cluster, and isolating tenants by cluster works. Where an `init` baseline
+  exists and the overlay disagrees with it, the call is **refused** with a clear
+  error rather than silently honoured either way: one instance holds one Qdrant
+  credential under one instance-wide network allow-list, so redirecting a tenant
+  elsewhere would send that credential to a host the operator never named it
+  for. An overlay that merely repeats the baseline URL is accepted — a
+  fully-merged overlay always carries it.
+- **The overlay is only as trustworthy as the host's strip.** Everything above
+  rests on both hosts stripping the caller's `_tenant_overlay` unconditionally.
+  Now that the overlay also carries `qdrant_url` and `embedding.base_url`, a
+  host that failed to strip would let a caller aim this instance's credentials
+  at a server of their choosing — a strictly larger blast radius than reading
+  the wrong collection. This extension cannot verify the strip from inside; it
+  is the host contract this design depends on.
 - **Isolation is not authorization.** Per-tenant collections stop tenant A
   reading tenant B. They say nothing about which people *inside* a tenant may
   delete its documents.
@@ -602,7 +637,7 @@ allowed to import `bindings::`. Everywhere else — `ops.rs`, `qdrant.rs`,
 `embed.rs`, `chunk.rs`, `config.rs`, `input.rs`, `error.rs` — takes `&impl
 HostCalls` generically, and tests substitute the SDK's `MockHttpClient` /
 `MockSecretsBackend` (from `greentic-extension-sdk-testing`) instead of a real
-transport. That's what makes 115 tests run in milliseconds on the host instead
+transport. That's what makes 134 tests run in milliseconds on the host instead
 of requiring a WASM runtime or a live Qdrant cluster.
 
 `src/ops.rs` is the only module that sequences more than one host call for a
@@ -621,7 +656,7 @@ before writing your first tool.
 ## Testing
 
 ```
-cargo test                    # 115 tests, ~milliseconds, no WASM runtime
+cargo test                    # 134 tests, ~milliseconds, no WASM runtime
 ./ci/local_check.sh           # fmt + clippy -D warnings + test + build
 gtdx validate && gtdx lint    # describe.json against schema + cross-field invariants
 ```
