@@ -10,8 +10,9 @@ use crate::error::RagError;
 use crate::host::{HostCalls, HttpRequest, HttpResponse};
 use crate::input::{DeleteInput, EnsureInput, IngestInput, ListInput, SearchInput, UpsertInput};
 use crate::qdrant::{
-    DeleteSelector, Point, chunk_point_id, delete_request, ensure_collection_request, parse_ack,
-    parse_ensure_ack, parse_hits, parse_scroll, query_request, scroll_request, upsert_request,
+    DeleteSelector, Point, ScrollPoint, chunk_point_id, delete_request, ensure_collection_request,
+    parse_ack, parse_ensure_ack, parse_hits, parse_scroll, query_request, scroll_request,
+    upsert_request,
 };
 
 /// Secret URIs. These must match `runtime.permissions.secrets` in describe.json
@@ -322,9 +323,12 @@ pub fn ensure_collection<H: HostCalls>(
 /// A payload's `doc_id`, `chunk_index` and `text` are chunk artifacts written
 /// by `ingest` (see the payload assembly there), not part of the caller's
 /// original metadata. Stripping them back out recovers exactly the object the
-/// caller passed as `metadata` at ingest time. A non-object payload (should
-/// not happen — `upsert` and `ingest` both reject one before writing) is
-/// returned unchanged rather than discarded.
+/// caller passed as `metadata` — for a `rag_ingest`-created point, whose
+/// payload assembly clones `input.metadata` verbatim. `rag_upsert` accepts an
+/// arbitrary payload with no such guarantee, so for a point written that way
+/// this only strips the three reserved keys back out of whatever was there. A
+/// non-object payload (should not happen — `upsert` and `ingest` both reject
+/// one before writing) is returned unchanged rather than discarded.
 fn strip_chunk_fields(payload: &Value) -> Value {
     let Some(map) = payload.as_object() else {
         return payload.clone();
@@ -334,6 +338,33 @@ fn strip_chunk_fields(payload: &Value) -> Value {
     metadata.remove("chunk_index");
     metadata.remove("text");
     Value::Object(metadata)
+}
+
+/// A point's rank within its `doc_id` group, ascending — the lowest rank
+/// wins. `(false, ..)` (has a `chunk_index`) sorts before `(true, ..)` (does
+/// not), so any point with a `chunk_index` outranks any point without one
+/// regardless of the index's value. Within each of those two bands, ties are
+/// broken by the numeric `chunk_index` and then, for points that share both a
+/// band and an index (or lack one entirely), by the point id string —
+/// giving a total order that is independent of scroll return order.
+type ChunkRank = (bool, u64, String);
+
+fn chunk_rank(point: &ScrollPoint) -> ChunkRank {
+    let chunk_index = point.payload.get("chunk_index").and_then(Value::as_u64);
+    (
+        chunk_index.is_none(),
+        chunk_index.unwrap_or(0),
+        point.id.clone(),
+    )
+}
+
+/// Per-`doc_id` accumulator for [`list`]: every point in the group is
+/// counted, but only the metadata of the point with the lowest [`ChunkRank`]
+/// survives.
+struct DocGroup {
+    chunk_count: u32,
+    best_rank: ChunkRank,
+    metadata: Value,
 }
 
 /// Enumerate stored documents, one Qdrant scroll page at a time, grouped by
@@ -349,6 +380,17 @@ fn strip_chunk_fields(payload: &Value) -> Value {
 /// A point with no `doc_id` in its payload — `upsert` does not require one —
 /// is grouped under its own point id, so it still shows up as a one-chunk
 /// entry instead of disappearing from the listing.
+///
+/// Only one point's metadata survives per `doc_id` — payloads are never
+/// merged. The surviving point is the one with the lowest `chunk_index`;
+/// points with no `chunk_index` rank after every point that has one, and
+/// among themselves are ordered by their point id string, ascending. This
+/// makes the winner deterministic regardless of the order Qdrant's scroll
+/// happens to return points in. For a `rag_ingest`-created document every
+/// chunk carries identical metadata, so the rule is invisible. For a document
+/// assembled from several `rag_upsert` calls sharing a `doc_id` but carrying
+/// different payloads, only the winning point's metadata is returned — the
+/// rest are silently discarded, by design, not merged.
 ///
 /// # Errors
 /// Propagates secret, transport and Qdrant errors.
@@ -366,20 +408,33 @@ pub fn list<H: HostCalls>(host: &H, cfg: &Config, input: &ListInput) -> Result<V
     let page = parse_scroll(resp.status, &resp.body)?;
 
     let mut order: Vec<String> = Vec::new();
-    let mut by_doc: std::collections::HashMap<String, (u32, Value)> =
-        std::collections::HashMap::new();
+    let mut by_doc: std::collections::HashMap<String, DocGroup> = std::collections::HashMap::new();
     for point in page.points {
         let doc_id = point
             .payload
             .get("doc_id")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .unwrap_or(point.id);
+            .unwrap_or_else(|| point.id.clone());
+        let rank = chunk_rank(&point);
         match by_doc.get_mut(&doc_id) {
-            Some((chunk_count, _)) => *chunk_count += 1,
+            Some(group) => {
+                group.chunk_count += 1;
+                if rank < group.best_rank {
+                    group.best_rank = rank;
+                    group.metadata = strip_chunk_fields(&point.payload);
+                }
+            }
             None => {
                 order.push(doc_id.clone());
-                by_doc.insert(doc_id, (1, strip_chunk_fields(&point.payload)));
+                by_doc.insert(
+                    doc_id,
+                    DocGroup {
+                        chunk_count: 1,
+                        best_rank: rank,
+                        metadata: strip_chunk_fields(&point.payload),
+                    },
+                );
             }
         }
     }
@@ -387,11 +442,11 @@ pub fn list<H: HostCalls>(host: &H, cfg: &Config, input: &ListInput) -> Result<V
     let documents: Vec<Value> = order
         .into_iter()
         .filter_map(|doc_id| {
-            by_doc.remove(&doc_id).map(|(chunk_count, metadata)| {
+            by_doc.remove(&doc_id).map(|group| {
                 serde_json::json!({
                     "doc_id": doc_id,
-                    "chunk_count": chunk_count,
-                    "metadata": metadata,
+                    "chunk_count": group.chunk_count,
+                    "metadata": group.metadata,
                 })
             })
         })
@@ -752,6 +807,70 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert_eq!(docs[0]["doc_id"], "p1");
         assert_eq!(docs[0]["chunk_count"], 1);
+    }
+
+    /// `rag_upsert` lets several calls share a `doc_id` with different
+    /// payloads (see `UPSERT_META.usage_hint`), so the point Qdrant happens
+    /// to scroll first is not necessarily the one whose metadata should
+    /// survive. The winner must be the lowest `chunk_index`, regardless of
+    /// the order the points arrive in — here deliberately out of order
+    /// (index 2, then 0, then 1).
+    #[test]
+    fn list_picks_the_lowest_chunk_index_metadata_regardless_of_scroll_order() {
+        let body = serde_json::json!({
+            "result": {
+                "points": [
+                    {"id": "pc", "payload": {"doc_id": "d1", "chunk_index": 2, "marker": "idx2"}},
+                    {"id": "pa", "payload": {"doc_id": "d1", "chunk_index": 0, "marker": "idx0"}},
+                    {"id": "pb", "payload": {"doc_id": "d1", "chunk_index": 1, "marker": "idx1"}},
+                ],
+                "next_page_offset": null,
+            }
+        })
+        .to_string();
+        let host = list_host(ok(&body), "kb");
+        let input = crate::input::parse_list(r#"{}"#).unwrap();
+        let out = list(&host, &cfg(), &input).unwrap();
+
+        let docs = out["documents"].as_array().unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(
+            docs[0]["chunk_count"], 3,
+            "every point in the group must still be counted"
+        );
+        assert_eq!(
+            docs[0]["metadata"]["marker"], "idx0",
+            "the surviving metadata must be chunk_index 0's, not the first point Qdrant returned"
+        );
+    }
+
+    /// Points written by `rag_upsert` need not carry a `chunk_index` at all.
+    /// Among such points sharing a `doc_id`, the tie-break is the point id
+    /// string, ascending — again independent of scroll order.
+    #[test]
+    fn list_breaks_ties_among_indexless_points_by_point_id_ascending() {
+        let body = serde_json::json!({
+            "result": {
+                "points": [
+                    {"id": "zzz", "payload": {"doc_id": "d1", "marker": "from-zzz"}},
+                    {"id": "aaa", "payload": {"doc_id": "d1", "marker": "from-aaa"}},
+                ],
+                "next_page_offset": null,
+            }
+        })
+        .to_string();
+        let host = list_host(ok(&body), "kb");
+        let input = crate::input::parse_list(r#"{}"#).unwrap();
+        let out = list(&host, &cfg(), &input).unwrap();
+
+        let docs = out["documents"].as_array().unwrap();
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0]["chunk_count"], 2);
+        assert_eq!(
+            docs[0]["metadata"]["marker"], "from-aaa",
+            "\"aaa\" sorts before \"zzz\", so its metadata must win even though \
+             \"zzz\" was scrolled first"
+        );
     }
 
     #[test]

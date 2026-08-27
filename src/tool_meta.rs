@@ -171,7 +171,7 @@ const ENSURE_META: &str = r#"{
 }"#;
 
 const LIST_META: &str = r#"{
-  "usage_hint": "Enumerate the documents stored in the knowledge base, grouped by doc_id with a chunk count and the metadata stored at ingest. Use this to answer what is in the knowledge base before deciding what to search, ingest or delete. Results are paginated: pass the previous response's next_page_offset back as offset to continue.",
+  "usage_hint": "Enumerate the documents stored in the knowledge base, grouped by doc_id with a chunk count and the metadata stored at ingest. Use this to answer what is in the knowledge base before deciding what to search, ingest or delete. Results are paginated: pass the previous response's next_page_offset back as offset to continue. chunk_count reflects only the current page, not the document's total chunk count — a document whose chunks straddle a page boundary will show a partial count on each page it appears in.",
   "side_effects": "read",
   "cost": "low",
   "confirmation_required": false
