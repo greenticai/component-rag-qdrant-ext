@@ -215,6 +215,69 @@ change anything in there. The rules that are easy to break by accident:
 - After changing any of it: `gtdx lint` **and** `gtdx validate` (lint works from
   raw JSON and will not catch a bad `views[].tools` entry; validate will).
 
+## No flow node types — and why adding some would break silently
+
+`contributions.nodeTypes[]` is the **only** thing that puts an entry in the
+designer's flow palette. This extension declares none, and that is deliberate:
+it cannot declare a working one yet.
+
+**A node type only executes if its `runtime_ref` names a component carrying an
+`oci_ref`.** This crate ships a `gtpack` — the design-extension wasm — and
+nothing else. Pointing a node type at it produces an entry that is accepted
+everywhere and works nowhere:
+
+- `gtdx validate` accepts it. `describe-v2.json` declares
+  `nodeTypes: {"type": "array", "items": {}}` — no sub-schema at all.
+- `gtdx lint` and `gtdx lint --publish` accept it. Exactly one lint rule reads
+  node types, `E_RUNTIME_REF`, and it only checks that the ref names *some* key
+  in `runtime.components`. Self-referencing satisfies it.
+- The designer's palette still renders the tile —
+  `ui::extension_lifecycle::build_registry` never inspects `runtime_ref`, and
+  the `NodeTypeDescriptor` it round-trips through does not even have that field.
+- The pack build then drops it. `orchestrate::pack_via_packc::ext_nodes`
+  indexes a node type only when `runtime.components.<runtime_ref>.oci_ref` is
+  present, and `graph::node_kind` is **total** — so the unrecognised canvas node
+  falls through to `"adaptive-card"` and is packed as a **blank Adaptive Card**.
+  The component is never vendored and the `operation` never runs, in Run Demo,
+  in `/api/pack`, and therefore in any deployed bundle.
+- Even if it were reachable, greentic-runner-host accepts a node runtime only
+  if it exports `node@0.5` / `node@0.4` / `component-runtime@0.6`. A design
+  extension exports `greentic:extension-design/tools`. This is the same bug the
+  SDK removed from its own `wasm-component` scaffold in #106.
+
+Omitting `runtime_ref` is not an escape hatch. For a *tool*, absent means "use
+the only declared component"; for a *node type* it means the designer falls
+through to the pin in `flow_generator/catalog.baseline.yaml`, which knows
+nothing about this extension. Same blank Adaptive Card.
+
+**What it would take:** a separate flow component — world
+`greentic:component/component-v0-v6-v0@0.6.0`, a crate in
+`greenticai/components-public`, published to GHCR and pinned here **by digest,
+not by tag**, since a built pack embeds the reference permanently. That is what
+`greentic.tavily` does: `tavily-tool` (this kind of design wasm) plus a separate
+`tavily-node` carrying the `oci_ref`. There is no `component-rag-qdrant` yet.
+
+`tool_meta.rs::node_types_must_resolve_to_a_published_flow_component` guards all
+of the above. It passes vacuously today and fails the moment a node type is
+added without a digest-pinned `oci_ref` component behind it. The tools that
+*should* become nodes once one exists, and the reasoning for each inclusion and
+omission, are recorded in `INTENDED_FLOW_PALETTE` beside it.
+
+**None of this means flows cannot use this extension.** All six tools declare
+`agentic_worker`, so a flow's `dw.agent` / `dw.agent_graph` node already
+dispatches to them via `ExtensionRuntime::invoke_tool_ctx`. `rag_search` has a
+purpose-built binding: a `provider.knowledge.extension` knowledge provider names
+this extension in `provider.knowledge.extension.extension_id` and the retrieval
+tool in `provider.knowledge.extension.tool_name`. What is missing is a palette
+tile — discoverability, not reach.
+
+> Beware `contributions.tools[].capabilities`. `"flow"` does **not** mean
+> "callable from a running flow": the designer reads it in
+> `tool_bridge::defs::is_chat_surface` to decide whether a tool joins the
+> **designer chat** assistant's tool loop. The runner filters on
+> `"agentic_worker"` for what a flow's agent node may call. Neither affects the
+> palette.
+
 ## Tenant isolation
 
 `_tenant_overlay` is a reserved tool-argument key the host stamps onto **every**
