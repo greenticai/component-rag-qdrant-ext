@@ -10,7 +10,7 @@
   "metadata": {
     "id": "greentic.rag-qdrant",
     "name": "RAG (Qdrant)",
-    "version": "0.4.1",
+    "version": "0.5.0",
     "summary": "Semantic search, ingestion and deletion over a Qdrant collection",
     "description": "Design extension exposing six tools to both the agentic worker and flow nodes: rag_search, rag_upsert, rag_ingest, rag_delete, rag_collection_ensure and rag_list. Text is embedded through a configurable OpenAI-shaped embeddings API; callers holding their own vectors can pass them directly. Ingestion chunks a document, deletes that doc_id's previous chunks, then upserts the new ones, so re-ingesting never duplicates or orphans content. rag_list enumerates stored documents, grouped by doc_id, using Qdrant's scroll API with pagination surfaced to the caller.",
     "author": {
@@ -42,7 +42,7 @@
           "file": "extension.wasm",
           "sha256": "f3c0d2c6840bcae59f1e464acb8a5f72814efbc6f7a93ead48209831a5ba1d0a",
           "pack_id": "greentic.rag-qdrant",
-          "component_version": "0.4.1"
+          "component_version": "0.5.0"
         },
         "sha256": "f3c0d2c6840bcae59f1e464acb8a5f72814efbc6f7a93ead48209831a5ba1d0a",
         "world": "greentic:rag-qdrant/extension@1.0.0"
@@ -79,6 +79,7 @@
       "description": "Bearer token for the embeddings API configured in `embedding.base_url`."
     }
   ],
+  "configSchema": "{\"type\": \"object\", \"title\": \"RAG (Qdrant) configuration\", \"description\": \"Where to store and search this extension's vector data.\", \"properties\": {\"qdrant_url\": {\"type\": \"string\", \"format\": \"uri\", \"title\": \"Qdrant server URL\", \"description\": \"The address of your Qdrant instance, including scheme and port. This is where the extension stores and searches vector data. For Qdrant Cloud, copy the cluster URL from your cluster's dashboard; for a self-hosted instance, use its reachable address.\", \"examples\": [\"https://your-cluster-id.your-region.aws.cloud.qdrant.io:6333\"]}, \"collection\": {\"type\": \"string\", \"minLength\": 1, \"title\": \"Collection name\", \"description\": \"The Qdrant collection this extension reads from and writes to. If it does not exist yet, run the rag_collection_ensure tool once to create it. In a multi-tenant deployment, give each tenant its own collection name.\", \"examples\": [\"knowledge-base\"]}, \"require_tenant_overlay\": {\"type\": \"boolean\", \"title\": \"Require a per-tenant collection\", \"description\": \"When turned on, the extension refuses any request from a tenant that has not been assigned its own collection, instead of silently falling back to the collection above. Turn this on for multi-tenant deployments to stop one tenant's data from mixing with another's. Leave it off for a single-tenant or local install.\", \"default\": false}}, \"required\": [\"qdrant_url\", \"collection\"]}",
   "contributions": {
     "tools": [
       {

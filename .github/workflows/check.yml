@@ -12,12 +12,15 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Pinned >=1.2.10 (contributions.views manifest support this extension's
-  # describe.json uses — 1.2.7 fails `gtdx validate`/`gtdx lint` on it) and
-  # >=1.2.3 regardless (older release tarballs have a broken layout that
-  # makes `cargo binstall` silently fall back to a full source build). Bump
+  # Pinned >=1.2.19 (describe.json's top-level `configSchema` this extension
+  # now uses is unknown to older gtdx — `DescribeJson` denies unknown fields,
+  # so `gtdx lint --publish` would reject the describe outright), >=1.2.10
+  # (contributions.views manifest support this extension's describe.json
+  # uses — 1.2.7 fails `gtdx validate`/`gtdx lint` on it), and >=1.2.3
+  # regardless (older release tarballs have a broken layout that makes
+  # `cargo binstall` silently fall back to a full source build). Bump
   # deliberately, not automatically.
-  GTDX_VERSION: "1.2.15"
+  GTDX_VERSION: "1.2.19"
   CARGO_COMPONENT_VERSION: "0.21.1"
 
 jobs:

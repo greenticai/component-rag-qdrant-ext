@@ -27,7 +27,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  GTDX_VERSION: "1.2.15"
+  # Kept in step with check.yml's GTDX_VERSION — see the comment there for
+  # why 1.2.19 is the floor now that describe.json carries `configSchema`.
+  GTDX_VERSION: "1.2.19"
   CARGO_COMPONENT_VERSION: "0.21.1"
   GREENTIC_STORE_URL: "https://store.greentic.cloud"
 
