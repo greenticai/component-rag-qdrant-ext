@@ -426,6 +426,57 @@ mod tests {
         }
     }
 
+    /// `describe.json`'s top-level `configSchema` is a *string* holding a
+    /// JSON Schema — the describe is data, and nothing else in this suite
+    /// touches it, so a typo (unbalanced quotes, a dropped field) would
+    /// otherwise ship unnoticed while `cargo test`, clippy and `gtdx lint`
+    /// all stayed green. `config.rs::resolve` treats `qdrant_url` and
+    /// `collection` as the only two fields with no working default (see its
+    /// module docs), so this also pins that the form the admin console
+    /// renders actually asks for both of them.
+    #[test]
+    fn describe_json_config_schema_parses_and_names_the_required_fields() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../describe.json"))
+            .expect("describe.json must be valid JSON");
+        let config_schema_str = manifest["configSchema"]
+            .as_str()
+            .expect("describe.json must have a top-level configSchema string");
+
+        let config_schema: serde_json::Value =
+            serde_json::from_str(config_schema_str).expect("configSchema must parse as JSON");
+        assert!(
+            config_schema.is_object(),
+            "configSchema must parse to a JSON object, not {config_schema}"
+        );
+
+        let properties = config_schema["properties"]
+            .as_object()
+            .expect("configSchema must declare properties");
+        assert!(
+            properties.contains_key("qdrant_url"),
+            "configSchema must name qdrant_url — config.rs::resolve treats it as required"
+        );
+        assert!(
+            properties.contains_key("collection"),
+            "configSchema must name collection — config.rs::resolve treats it as required"
+        );
+
+        let required = config_schema["required"]
+            .as_array()
+            .expect("configSchema must declare a required array")
+            .iter()
+            .map(|v| v.as_str().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert!(
+            required.contains(&"qdrant_url"),
+            "qdrant_url has no working default and must be required"
+        );
+        assert!(
+            required.contains(&"collection"),
+            "collection has no working default and must be required"
+        );
+    }
+
     /// Not an assertion — a generator. Prints the `contributions.tools` block
     /// for describe.json so the schemas are never hand-copied out of sync.
     /// Run: `cargo test print_contributions -- --ignored --nocapture`
