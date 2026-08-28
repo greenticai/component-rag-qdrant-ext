@@ -477,6 +477,288 @@ mod tests {
         );
     }
 
+    /// The tools that would become flow palette entries, if this extension
+    /// could contribute any — see
+    /// `node_types_must_resolve_to_a_published_flow_component` for why it
+    /// currently cannot.
+    ///
+    /// Deliberately a subset of the six. A node type is something a flow
+    /// author drags onto a canvas and the runner then executes unattended:
+    /// no confirmation step, no human in the loop. That is a higher bar than
+    /// the agentic worker (which gates on `confirmation_required`, asserted
+    /// in `reads_do_not_ask_for_confirmation_and_writes_do`) or the Knowledge
+    /// base view (which confirms in-page). Kept:
+    ///
+    /// - `rag_search` — the reason a flow reaches for this extension at all:
+    ///   retrieve grounding passages before a step that answers. Read-only.
+    /// - `rag_ingest` — the other half, populating the knowledge base from a
+    ///   pipeline. Idempotent by `doc_id`: `ops::ingest` deletes that
+    ///   document's chunks and rewrites them, so a re-run replaces rather
+    ///   than duplicates.
+    ///
+    /// Left out, and why:
+    ///
+    /// - `rag_upsert` — the low-level twin of `rag_ingest`. It demands a
+    ///   Qdrant-legal point id (unsigned integer or UUID), stores text
+    ///   unchunked, and a repeat id silently replaces that point's entire
+    ///   payload with no merge and no read-before-write. `rag_ingest` serves
+    ///   the same intent with any string `doc_id`. Two write entries where
+    ///   one fails on an id typo is a worse palette than one that works.
+    /// - `rag_delete` — irreversible, and unbounded when given a `doc_id`:
+    ///   `ops::delete` returns a bare `{"ok": true}` whether it removed zero
+    ///   points or ten thousand, so a mistyped id is indistinguishable from a
+    ///   correct deletion. The two surfaces that do expose it both ask first.
+    ///   A flow node would not.
+    /// - `rag_collection_ensure` — one-time deployment setup, and
+    ///   `ops::ingest` / `ops::upsert` already ensure the collection on every
+    ///   write. A flow never needs it.
+    /// - `rag_list` — inventory rather than automation: `limit` counts chunks
+    ///   and not documents, `chunk_count` covers only the page in hand, and
+    ///   consuming it means a cursor loop. The Knowledge base view already
+    ///   does this job with a UI built for it.
+    ///
+    /// All six remain available to the agentic worker and to the view.
+    /// `contributions.tools[].capabilities` is a dispatch gate, not a palette
+    /// registration, so nothing here withdraws a tool from anything.
+    #[cfg(test)]
+    const INTENDED_FLOW_PALETTE: &[(&str, &str)] = &[
+        ("rag-qdrant.search", SEARCH_TOOL),
+        ("rag-qdrant.ingest", INGEST_TOOL),
+    ];
+
+    /// A node type only reaches a running flow if its `runtime_ref` names a
+    /// component carrying an `oci_ref`. This extension has no such component,
+    /// so it contributes none — and this test is what stops one being added
+    /// back without one.
+    ///
+    /// The trap is that every gate an author would think to run stays green.
+    /// `gtdx validate` accepts it (`describe-v2.json` declares
+    /// `nodeTypes: {"type": "array", "items": {}}` — no sub-schema at all),
+    /// and `gtdx lint` has exactly one rule that reads node types,
+    /// `E_RUNTIME_REF`, which only checks that the ref names *some* key in
+    /// `runtime.components`. Pointing it at this crate's own design-extension
+    /// wasm satisfies that and lints clean at both `gtdx lint` and
+    /// `gtdx lint --publish`. What happens next is silent:
+    ///
+    /// - greentic-designer's `orchestrate::pack_via_packc::ext_nodes` indexes
+    ///   a node type only when `runtime.components.<runtime_ref>.oci_ref` is
+    ///   present. This crate ships a `gtpack`, not an `oci_ref`, so the entry
+    ///   is dropped from the index — and `graph::node_kind` is TOTAL, so the
+    ///   unrecognised canvas node falls through to `"adaptive-card"` and is
+    ///   packed as a blank AdaptiveCard. The component is never vendored and
+    ///   the `operation` never runs, in Run Demo, in `/api/pack`, and so in
+    ///   any deployed bundle.
+    /// - `flow_generator::compiler::resolve` says it outright: "If there is
+    ///   no oci_ref (gtpack-only), fall through to catalog pin" — and
+    ///   `flow_generator/catalog.baseline.yaml` pins nothing for these ids.
+    /// - greentic-runner-host accepts a component as a node runtime only if
+    ///   it exports `node@0.5` / `node@0.4` / `component-runtime@0.6`. A
+    ///   design extension exports `greentic:extension-design/tools`, so it
+    ///   could not execute the node even if it were reachable. This is the
+    ///   bug the SDK removed from its own `wasm-component` scaffold in #106.
+    ///
+    /// Meanwhile `catalog_dynamic::capability_from_node_type` is pure and
+    /// total and builds the palette entry regardless. So the entry appears,
+    /// an author uses it, and the pack silently contains a blank card.
+    ///
+    /// Unblocking this needs a separate flow component — world
+    /// `greentic:component/component-v0-v6-v0@0.6.0`, a crate in
+    /// `greenticai/components-public`, published to GHCR and pinned here by
+    /// digest — which is how `greentic.tavily` does it. Once that exists, add
+    /// it to `runtime.components` beside `rag-qdrant`, declare the entries in
+    /// `INTENDED_FLOW_PALETTE` above, and this test checks the wiring.
+    ///
+    /// # What a palette tile is missing is discoverability, not reach
+    ///
+    /// These tools are already callable from a running flow, without any node
+    /// type, because all six declare `agentic_worker`. A flow's `dw.agent` /
+    /// `dw.agent_graph` node dispatches to them through
+    /// `greentic-aw-runtime::tools::dispatch_tool_call`, which falls through
+    /// to `ExtensionRuntime::invoke_tool_ctx` — the same
+    /// `greentic:extension-design/tools.invoke-tool` export the view bridge
+    /// uses. `rag_search` in particular has a purpose-built binding: a
+    /// `provider.knowledge.extension` knowledge provider names this extension
+    /// in `provider.knowledge.extension.extension_id` and the retrieval tool
+    /// in `provider.knowledge.extension.tool_name`. That is the supported way
+    /// to ground an agent on this knowledge base today, and it is why the
+    /// absence of node types is a gap in discoverability rather than in
+    /// capability.
+    #[test]
+    fn node_types_must_resolve_to_a_published_flow_component() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../describe.json"))
+            .expect("describe.json must be valid JSON");
+
+        let nodes = match manifest["contributions"]["nodeTypes"].as_array() {
+            Some(nodes) => nodes,
+            // No node types is the current, deliberate state. The doc comment
+            // above records why; there is nothing to check.
+            None => return,
+        };
+
+        let components = manifest["runtime"]["components"]
+            .as_object()
+            .expect("describe.json has no runtime.components object");
+        let published_tools = manifest["contributions"]["tools"]
+            .as_array()
+            .expect("describe.json has no contributions.tools array");
+        let tool_names: Vec<&str> = all_tools().into_iter().map(|t| t.name).collect();
+
+        let declared: Vec<(&str, &str)> = nodes
+            .iter()
+            .map(|n| {
+                let type_id = n["type_id"]
+                    .as_str()
+                    .expect("node type_id must be a string");
+                let operation = n["operation"].as_str().unwrap_or_else(|| {
+                    panic!(
+                        "{type_id} sets no operation. The runner REQUIRES it and does not \
+                         default — it refuses the node with \"expected \
+                         node.component.operation to be set\", at execution time, after \
+                         the palette and the pack build have both reported success."
+                    )
+                });
+                (type_id, operation)
+            })
+            .collect();
+
+        assert_eq!(
+            declared,
+            INTENDED_FLOW_PALETTE.to_vec(),
+            "the flow palette in describe.json has drifted from \
+             INTENDED_FLOW_PALETTE — which tools become nodes is a deliberate \
+             decision, so change both together and record the reasoning in that \
+             constant's doc comment"
+        );
+
+        for node in nodes {
+            let type_id = node["type_id"].as_str().unwrap_or_default();
+            let operation = node["operation"].as_str().unwrap_or_default();
+
+            assert!(
+                tool_names.contains(&operation),
+                "{type_id} runs operation {operation:?}, which is not a tool this \
+                 extension contributes (have: {tool_names:?}) — the palette entry \
+                 would fail when someone ran the flow"
+            );
+
+            // Deliberately NOT asserted here: that the tool declares the
+            // "flow" capability. `capabilities` is a different axis, and the
+            // name is misleading — the designer's `tool_bridge::defs::
+            // is_chat_surface` reads "flow" to decide whether a tool joins the
+            // DESIGNER CHAT assistant's tool-calling loop, while the runner's
+            // `manifest_tools` filters on "agentic_worker" to decide what a
+            // running flow's `dw.agent` node may call. Neither has any bearing
+            // on the palette, which is `nodeTypes` alone.
+            assert!(
+                published_tools.iter().any(|t| t["name"] == operation),
+                "{type_id} runs {operation:?}, absent from contributions.tools"
+            );
+
+            let runtime_ref = node["runtime_ref"].as_str().unwrap_or_else(|| {
+                panic!(
+                    "{type_id} has no runtime_ref. Absent does NOT mean \"use the only \
+                     declared component\" for a node type — that is the rule for tools. \
+                     The designer falls through to the pin in \
+                     flow_generator/catalog.baseline.yaml, which knows nothing about \
+                     this extension, so the node resolves to nothing."
+                )
+            });
+            let component = components.get(runtime_ref).unwrap_or_else(|| {
+                panic!(
+                    "{type_id}'s runtime_ref {runtime_ref:?} names no key in \
+                     runtime.components (have: {:?}) — gtdx lint reports this one as \
+                     E_RUNTIME_REF",
+                    components.keys().collect::<Vec<_>>()
+                )
+            });
+
+            assert!(
+                component["oci_ref"].as_str().is_some_and(|r| !r.is_empty()),
+                "{type_id} points at {runtime_ref:?}, which has no oci_ref. The \
+                 designer's pack build indexes a node type only when \
+                 runtime.components.<runtime_ref>.oci_ref is present; without it the \
+                 canvas node falls through node_kind's total match and is packed as a \
+                 blank AdaptiveCard. gtdx lint does not catch this: {component}"
+            );
+            assert!(
+                component["gtpack"].is_null(),
+                "{type_id}'s node component must not also be an in-pack gtpack — the \
+                 design-extension wasm cannot execute a node, it exports \
+                 greentic:extension-design/tools rather than component-runtime: \
+                 {component}"
+            );
+            assert!(
+                component["oci_ref"]
+                    .as_str()
+                    .is_some_and(|r| r.contains("@sha256:")),
+                "{type_id}'s component must be pinned by digest, not by tag — a built \
+                 pack embeds the reference permanently: {component}"
+            );
+
+            assert!(
+                !node["output_ports"]
+                    .as_array()
+                    .unwrap_or(&Vec::new())
+                    .is_empty(),
+                "{type_id} has no output ports, so nothing can follow it in a flow"
+            );
+
+            let config_schema: serde_json::Value = node["config_schema"]
+                .as_str()
+                .map(|s| {
+                    serde_json::from_str(s)
+                        .unwrap_or_else(|e| panic!("{type_id}: config_schema is not JSON: {e}"))
+                })
+                .unwrap_or_else(|| panic!("{type_id}: config_schema must be a JSON string"));
+
+            // NodeType is deny_unknown_fields and has no description field of
+            // its own, so the operator-facing wording has nowhere to live but
+            // the top of config_schema.
+            assert!(
+                config_schema["title"].is_string() && config_schema["description"].is_string(),
+                "{type_id}: no operator-facing title/description. NodeType has no \
+                 description field — the contract struct is deny_unknown_fields — so \
+                 both belong at the top of config_schema."
+            );
+
+            let tool_meta = all_tools()
+                .into_iter()
+                .find(|t| t.name == operation)
+                .unwrap_or_else(|| panic!("{type_id}: no tool named {operation}"));
+            let input_schema: serde_json::Value =
+                serde_json::from_str(tool_meta.input_schema_json).expect("tool input schema");
+            let accepted = input_schema["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{operation} input schema declares no properties"));
+            let offered = config_schema["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{type_id}: config_schema declares no properties"));
+
+            for field in offered.keys() {
+                assert!(
+                    accepted.contains_key(field),
+                    "{type_id}: the node form collects {field:?}, which {operation} does \
+                     not accept — input.rs would reject the call at runtime"
+                );
+            }
+            for required in input_schema["required"].as_array().unwrap_or(&Vec::new()) {
+                let field = required.as_str().unwrap_or_default();
+                assert!(
+                    offered.contains_key(field),
+                    "{type_id}: {operation} requires {field:?}, but the node form never \
+                     collects it"
+                );
+            }
+            assert!(
+                !offered.contains_key("collection"),
+                "{type_id}: the node form must not offer `collection`. The host stamps \
+                 the tenant's collection via _tenant_overlay and ops::collection_of \
+                 refuses a per-call override, so a flow author who filled this in would \
+                 get an error on every run — the same rule the knowledge view follows."
+            );
+        }
+    }
+
     /// Not an assertion — a generator. Prints the `contributions.tools` block
     /// for describe.json so the schemas are never hand-copied out of sync.
     /// Run: `cargo test print_contributions -- --ignored --nocapture`
