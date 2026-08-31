@@ -9,7 +9,7 @@ API; callers that already hold a vector can pass it directly instead.
 - id: `greentic.rag-qdrant`
 - version: `0.5.0`
 - contract: `greentic:extension-design@0.3.0`
-- published: `greentic.rag-qdrant@0.3.0` on the Greentic store
+- published: `greentic.rag-qdrant@0.5.0` on the Greentic store
 
 **If you are here to copy this repo as a starting point for your own
 extension**, the RAG/Qdrant part is the least important thing in it. What is

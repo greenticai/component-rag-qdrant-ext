@@ -219,19 +219,19 @@ world. Treat as read-only, exactly as `AGENTS.md` says.
 Ten tracked `.rs` files under `src/`, plus one generated, gitignored file this section
 also has to account for.
 
-| File | Lines | Role |
-|---|---:|---|
-| `lib.rs` | 394 | WIT export layer |
-| `bindings.rs` | 3391 | generated — not tracked |
-| `ops.rs` | 1469 | orchestration |
-| `qdrant.rs` | 610 | Qdrant REST client |
-| `tool_meta.rs` | 791 | tool catalog |
-| `input.rs` | 389 | argument parsing |
-| `config.rs` | 795 | the tenant-overlay wire shape, the optional `lifecycle::init` baseline, and the merge between them |
-| `embed.rs` | 174 | embeddings client |
-| `chunk.rs` | 89 | text splitting |
-| `error.rs` | 28 | error taxonomy |
-| `host.rs` | 32 | the `HostCalls` seam |
+| File | Role |
+|---|---|
+| `lib.rs` | WIT export layer |
+| `bindings.rs` | generated — not tracked |
+| `ops.rs` | orchestration |
+| `qdrant.rs` | Qdrant REST client |
+| `tool_meta.rs` | tool catalog |
+| `input.rs` | argument parsing |
+| `config.rs` | the tenant-overlay wire shape, the optional `lifecycle::init` baseline, and the merge between them |
+| `embed.rs` | embeddings client |
+| `chunk.rs` | text splitting |
+| `error.rs` | error taxonomy |
+| `host.rs` | the `HostCalls` seam |
 
 **`src/lib.rs`** — the only module allowed to touch `crate::bindings`. Implements
 `Component` against every `Guest` trait the world exports: `manifest::Guest` (static
@@ -258,7 +258,7 @@ reaches it.
 committed or hand-edited; a fresh clone's first `cargo test` fails with `cannot find
 export in bindings` until one build has produced it.
 
-**`src/host.rs`** — the whole host boundary in 32 lines: plain `HttpRequest`/
+**`src/host.rs`** — the whole host boundary, small and self-contained: plain `HttpRequest`/
 `HttpResponse` structs and the `HostCalls` trait (`fetch`, `secret`). Depends on
 nothing. Everything else in the crate that needs a host call depends on this trait, not
 on a concrete implementation. **Careless-break:** none by itself — its entire purpose is
@@ -424,12 +424,12 @@ the build finishes.
 
 ### What each file does
 
-- **`index.html`** (174 lines) — the shell: a status line, a hidden `#workspace` that
+- **`index.html`** — the shell: a status line, a hidden `#workspace` that
   only appears once `greentic.ready` resolves, two tabs (Documents / Search), a file
   drop zone with a `<input type=file accept=".txt,.text,.csv,.tsv,.md,.markdown,.mdown,
   .mkd,.pdf,...">`, and a toast region. No inline `<script>`; loads `bridge.js`,
   `pdf.js`, then `app.js` in that order.
-- **`bridge.js`** (128 lines) — the transport. Wraps `postMessage` into
+- **`bridge.js`** — the transport. Wraps `postMessage` into
   `window.greentic.{ready, invokeTool, callApi, fetch, resize, navigate, toast}`. Two
   things worth internalizing if you copy it: it checks `event.source ===
   window.parent`, deliberately **not** `event.origin` — the page runs in
@@ -440,7 +440,7 @@ the build finishes.
   it server-side. Marked in `AGENTS.md` and `README.md` as copied byte-for-byte from
   the SDK scaffold and not to be edited — consistent with what is actually here: no
   extension-specific logic in the file at all.
-- **`pdf.js`** (1453 lines) — a dependency-free PDF text extractor exposing exactly one
+- **`pdf.js`** — a dependency-free PDF text extractor exposing exactly one
   global, `window.ragPdf.extractPdfText`. Confirmed by reading it: it inflates
   `/FlateDecode` streams with the browser's native `DecompressionStream`, expands
   `/ObjStm` compressed object streams, applies PNG predictors, and resolves glyph→text
@@ -452,7 +452,7 @@ the build finishes.
   `badFraction > 0.02` or `plausibleRatio < 0.6`, warning (not blocking) between that and
   `0.98`. This matches what `AGENTS.md`/`README.md` claim about it, checked directly
   against the source rather than taken on their word.
-- **`app.js`** (1093 lines) — the extension-specific logic: staging a file, extracting
+- **`app.js`** — the extension-specific logic: staging a file, extracting
   its text in-browser (`TEXT_EXTENSIONS = [txt, text, md, markdown, mdown, mkd, csv,
   tsv]`, plus PDF via `pdf.js`), previewing it, calling `rag_ingest`/`rag_list`/
   `rag_delete`/`rag_search` through the bridge, and rendering results. Confirmed by
@@ -466,7 +466,7 @@ the build finishes.
   them all until their individual 10-second timeouts fire. `TEXT_EXTENSIONS` here
   includes `csv` and `tsv` alongside the plain-text/Markdown extensions, matching
   `README.md`'s file-format table.
-- **`style.css`** (420 lines) — theme tokens on `:root`, redefined under
+- **`style.css`** — theme tokens on `:root`, redefined under
   `@media (prefers-color-scheme: dark)` guarded by `:root:not([data-theme="light"])`,
   and again under `:root[data-theme="dark"]` so an explicit host-provided theme (from
   the `init` message's `theme` field, applied in `app.js`) wins over the media query in
@@ -573,13 +573,13 @@ should ever be committed.
 
 ## Docs and agent config
 
-- **`README.md`** (811 lines) — the usage-facing document: quick start, configuration
+- **`README.md`** — the usage-facing document: quick start, configuration
   table, secrets, the full tool reference (schemas pulled straight from
   `tool_meta.rs`), a worked three-call example, the knowledge-base view walkthrough,
   four design decisions with the bugs each one fixed, requirements/limits, and its own
   copy of the architecture and testing sections. This document exists specifically not
   to repeat that content.
-- **`AGENTS.md`** (330 lines) — the agent-facing map: file layout, the pure/host-boundary
+- **`AGENTS.md`** — the agent-facing map: file layout, the pure/host-boundary
   split, workflow commands, the three testing layers, the pre-publish self-check
   sequence, the contributed-view rules, tenant-isolation rules, secrets policy, and the
   generated-vs-hand-edited file list. The single most useful file in this repo for an
