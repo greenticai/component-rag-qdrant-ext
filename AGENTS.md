@@ -9,7 +9,7 @@ repository. This is a Greentic Designer **design** extension scaffolded by
 
 ## What this is
 
-- **id:** `greentic.rag-qdrant`  ·  **version:** `0.4.0`  ·  **kind:** `design`
+- **id:** `greentic.rag-qdrant`  ·  **version:** `0.5.0`  ·  **kind:** `design`
 - A WebAssembly component (target `wasm32-wasip2`) that the Greentic runtime loads
   as a signed `.gtxpack`.
 - Exposes six tools to both flow nodes and the agentic worker, backed by a Qdrant
@@ -285,8 +285,9 @@ call, carrying this extension's effective per-tenant config. Both hosts strip it
 from the caller's own args first, so inside the guest it is trusted; a plain
 `collection` argument never can be.
 
-`ops::collection_of` resolves overlay → caller argument → process config, and
-refuses a caller argument outright whenever the overlay pins a collection. If
+`ops::collection_of` resolves overlay → caller argument → the merged config's
+`collection` (from `config::resolve` — the overlay's, or an `init` baseline's),
+and refuses a caller argument outright whenever the overlay pins a collection. If
 you add a tool, route it through `collection_of` and resolve **before** any host
 call — a refusal must not first spend an embeddings request, and the check
 belongs ahead of the side effects. `input::TenantOverlay` deliberately ignores

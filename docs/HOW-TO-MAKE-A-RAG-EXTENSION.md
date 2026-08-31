@@ -74,7 +74,7 @@ impl HostCalls for WitHost {
 ```
 
 Tests substitute `MockHttpClient` / `MockSecretsBackend` from
-`greentic-extension-sdk-testing` instead of `WitHost`. That's what makes 115
+`greentic-extension-sdk-testing` instead of `WitHost`. That's what makes 136
 tests run in milliseconds without a WASM runtime or a live vector store — and
 it's why the module list below is ordered the way it is: everything gets
 built pure and host-testable first, and the WIT glue is the very last thing
@@ -761,6 +761,20 @@ RUNTIME_REF=<runtime_ref> cargo test print_contributions -- --ignored --nocaptur
 
 and paste the printed JSON block into `describe.json`'s `contributions.tools`
 by hand — this is a generator, not a check, and nothing runs it for you.
+
+If your extension takes operator configuration, also declare a top-level
+`configSchema` — a JSON Schema, as a string — naming the fields an admin
+console can turn into a labelled form instead of a raw JSON editor. This
+repo's is worth copying as a template: it names only `qdrant_url`,
+`collection` and `require_tenant_overlay`, the flat fields with no working
+default or a real default worth exposing, and deliberately leaves out
+`embedding`/`chunk` because the renderer this schema targets falls through
+to raw JSON for nested objects — declaring one would promise a form control
+it cannot produce. `configSchema` is a manifest field newer than some `gtdx`
+releases understand: `DescribeJson` denies unknown fields, so an old `gtdx`
+rejects the whole describe outright rather than ignoring the one field it
+doesn't recognise. Pin your CI's `gtdx` version accordingly (see this repo's
+`.github/workflows/check.yml`).
 
 Validate after every edit:
 

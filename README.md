@@ -7,7 +7,7 @@ flow nodes and the agentic worker — backed by a Qdrant vector collection:
 API; callers that already hold a vector can pass it directly instead.
 
 - id: `greentic.rag-qdrant`
-- version: `0.4.0`
+- version: `0.5.0`
 - contract: `greentic:extension-design@0.3.0`
 - published: `greentic.rag-qdrant@0.3.0` on the Greentic store
 
@@ -60,13 +60,12 @@ or it fails with `cannot find export in bindings`.
 Configuration arrives **per call**, from the host. Both hosts stamp a reserved
 argument — `_tenant_overlay` — onto every tool call, carrying this extension's
 *effective* configuration for the calling tenant: the operator baseline
-deep-merged with that tenant's override, resolved from the admin console's
-`extension_config` tables. So the place to configure this extension is:
-
-> **Admin console → Extensions → RAG (Qdrant) → Configuration**
-
-with a JSON document shaped like the [Configuration](#configuration) table
-below, e.g.:
+deep-merged with that tenant's override, resolved from the admin's
+`extension_config` tables. There is no dedicated configuration screen for
+this extension today — no admin console UI touches `extension_config` yet —
+so set it through the admin API instead, as either the operator-wide baseline
+or one tenant's override, with a JSON document shaped like the
+[Configuration](#configuration) table below, e.g.:
 
 ```json
 {
@@ -79,6 +78,15 @@ below, e.g.:
   }
 }
 ```
+
+`describe.json` also declares a top-level `configSchema` — a JSON Schema
+naming `qdrant_url`, `collection` and `require_tenant_overlay` as a labelled
+form — so that a *generic* admin-console configuration UI can render one for
+this extension once it exists, instead of a raw JSON editor. It is data for
+that future renderer, not a configuration screen in itself. `embedding` and
+`chunk` are deliberately left out of it: both are nested objects, the
+renderer falls through to raw JSON for anything it can't turn into flat
+fields, and declaring them would promise a form control it cannot produce.
 
 `lifecycle::init` takes the same document as a process-wide baseline and is
 still supported — but it is **optional, and unused in practice**: the host
@@ -108,7 +116,7 @@ embeddings API instead of the network:
 cargo test ingest_deletes_the_document_before_upserting_its_chunks -- --nocapture
 ```
 
-or run everything with `cargo test` (134 tests, milliseconds, no WASM runtime
+or run everything with `cargo test` (136 tests, milliseconds, no WASM runtime
 involved — see [Testing](#testing)). To call a tool for real, install the
 built `.gtxpack` (above) into a Designer or agentic worker instance and give
 it the config and secrets above — that step happens outside this repo.
@@ -139,8 +147,10 @@ send more of the document than this version reads.
 | `require_tenant_overlay` | no | `false` | Refuse any call the host did not stamp a tenant collection onto, instead of falling back to `collection`. **Turn this on for a multi-tenant install** — see [Collections and tenancy](#collections-and-tenancy). |
 
 Configure nothing and every tool call is refused with a message naming the
-console, the screen and the two fields to fill in — not the old
-`lifecycle::init has not run`, which named an entry point no operator can reach.
+two fields to fill in and the scope each can be set at — operator baseline
+or tenant override — not the old `lifecycle::init has not run`, which named
+an entry point no operator can reach, and not a console screen either, since
+none exists yet.
 
 ## Secrets
 
@@ -637,7 +647,7 @@ allowed to import `bindings::`. Everywhere else — `ops.rs`, `qdrant.rs`,
 `embed.rs`, `chunk.rs`, `config.rs`, `input.rs`, `error.rs` — takes `&impl
 HostCalls` generically, and tests substitute the SDK's `MockHttpClient` /
 `MockSecretsBackend` (from `greentic-extension-sdk-testing`) instead of a real
-transport. That's what makes 134 tests run in milliseconds on the host instead
+transport. That's what makes 136 tests run in milliseconds on the host instead
 of requiring a WASM runtime or a live Qdrant cluster.
 
 `src/ops.rs` is the only module that sequences more than one host call for a
@@ -656,12 +666,12 @@ before writing your first tool.
 ## Testing
 
 ```
-cargo test                    # 134 tests, ~milliseconds, no WASM runtime
+cargo test                    # 136 tests, ~milliseconds, no WASM runtime
 ./ci/local_check.sh           # fmt + clippy -D warnings + test + build
 gtdx validate && gtdx lint    # describe.json against schema + cross-field invariants
 ```
 
-There are 115 unit tests and zero integration tests against a real Qdrant.
+There are 136 unit tests and zero integration tests against a real Qdrant.
 That is the point of the pure/host-boundary split above: every tool's logic —
 argument validation, request construction, response parsing, and the
 ordering across multiple host calls — runs against `MockHttpClient` /

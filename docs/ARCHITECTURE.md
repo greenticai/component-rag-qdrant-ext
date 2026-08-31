@@ -9,7 +9,7 @@ both this document and `README.md`, see
 [`docs/HOW-TO-MAKE-A-RAG-EXTENSION.md`](HOW-TO-MAKE-A-RAG-EXTENSION.md).
 
 All facts below were checked against the code at the commit this document was written
-against (`v0.4.0`, 134 tests passing). Where a claim could not be checked against
+against (`v0.5.0`, 136 tests passing). Where a claim could not be checked against
 something in this repository, that is said explicitly rather than assumed.
 
 ## The one rule, before anything else
@@ -29,7 +29,7 @@ bindings, and it is also the only place in the crate allowed to import `bindings
 Every other module — `ops.rs`, `qdrant.rs`, `embed.rs`, `chunk.rs`, `config.rs`,
 `input.rs`, `error.rs`, `tool_meta.rs` — takes `&impl HostCalls` generically, and tests
 substitute `greentic-extension-sdk-testing`'s `MockHttpClient` / `MockSecretsBackend`
-instead of a real transport. That is what makes 134 tests run in milliseconds on the
+instead of a real transport. That is what makes 136 tests run in milliseconds on the
 host instead of requiring a WASM runtime or a live Qdrant cluster.
 
 If you copy this layout for a new extension: a `bindings::` call in a pure module passes
@@ -65,7 +65,8 @@ here is invented.
    otherwise.
 
 3. **Write the pure modules.** `error.rs` (the error taxonomy), `host.rs` (the
-   `HostCalls` seam), `config.rs` (operator config, parsed once), then the
+   `HostCalls` seam), `config.rs` (the wire-shape overlay, the optional
+   `lifecycle::init` baseline, and the merge between them), then the
    domain-specific pure modules — here `chunk.rs`, `embed.rs`, `qdrant.rs` — and
    finally `ops.rs`, which is the only module allowed to sequence more than one host
    call per tool. None of these touch `bindings::`; all of them take `&impl HostCalls`
@@ -141,7 +142,9 @@ Fields split cleanly into authored and generated:
   repository,keywords}`; `compat.{min_designer_version,min_runner_version,
   contract_version}`; `capabilities.{offered,required}` (mirrors the `manifest::Guest`
   impl in `lib.rs`); `runtime.memoryLimitMB`; `runtime.permissions.{network,secrets,
-  callExtensionKinds,ui}`; `requiredSecrets`; `contributions.views`.
+  callExtensionKinds,ui}`; `requiredSecrets`; `contributions.views`; `configSchema`.
+  `contributions.nodeTypes` is also authored by hand — currently to an empty list,
+  deliberately; see `AGENTS.md`'s "No flow node types" section for why.
 - **Generated, never hand-edit:** the `sha256` fields under `runtime.components` —
   `gtdx publish` computes the real content hash; until then they are the placeholder
   `0000…0000`, and `gtdx lint --publish` refuses to ship that placeholder
@@ -152,6 +155,22 @@ Fields split cleanly into authored and generated:
 - **Hand-maintained, easy to forget:** `runtime.components.*.gtpack.component_version`.
   Unlike its neighbouring `sha256` field, `gtdx publish` never writes this one, so it
   drifts silently if a release bumps the package version everywhere else.
+
+**`configSchema`** — a top-level string holding a JSON Schema for this extension's
+*operator*-facing configuration (added in `0.5.0`; the field itself is unknown to a
+`gtdx` older than `1.2.19`, which is why CI's `GTDX_VERSION` is pinned there — see
+`.github/workflows/check.yml`). It exists so a generic admin-console configuration UI
+can render a labelled form for `qdrant_url`, `collection` and
+`require_tenant_overlay` instead of a raw JSON editor, once such a UI exists — no
+admin console screen for this extension is wired up today. `embedding` and `chunk` are
+deliberately absent from it: both are nested objects, and the renderer that consumes
+this schema falls through to raw JSON for anything it cannot turn into flat form
+fields, so declaring them would promise a control the renderer cannot produce. Only
+`qdrant_url` and `collection` are marked `required`, because `config.rs::resolve` gives
+every other field a working default. Kept honest by
+`tool_meta::tests::describe_json_config_schema_parses_and_names_the_required_fields`,
+which parses the string as JSON and asserts both required fields are named — the
+describe is data, so nothing else in the suite would catch a typo in it.
 
 `runtime.permissions` is the capability gate the running extension is held to:
 `network` (an exact-match/wildcard host allowlist any `http::fetch` call is checked
@@ -202,13 +221,13 @@ also has to account for.
 
 | File | Lines | Role |
 |---|---:|---|
-| `lib.rs` | 313 | WIT export layer |
+| `lib.rs` | 394 | WIT export layer |
 | `bindings.rs` | 3391 | generated — not tracked |
-| `ops.rs` | 1324 | orchestration |
+| `ops.rs` | 1469 | orchestration |
 | `qdrant.rs` | 610 | Qdrant REST client |
-| `tool_meta.rs` | 458 | tool catalog |
-| `input.rs` | 407 | argument parsing |
-| `config.rs` | 321 | operator config |
+| `tool_meta.rs` | 791 | tool catalog |
+| `input.rs` | 389 | argument parsing |
+| `config.rs` | 795 | the tenant-overlay wire shape, the optional `lifecycle::init` baseline, and the merge between them |
 | `embed.rs` | 174 | embeddings client |
 | `chunk.rs` | 89 | text splitting |
 | `error.rs` | 28 | error taxonomy |
@@ -216,12 +235,13 @@ also has to account for.
 
 **`src/lib.rs`** — the only module allowed to touch `crate::bindings`. Implements
 `Component` against every `Guest` trait the world exports: `manifest::Guest` (static
-identity/capabilities), `lifecycle::Guest::init` (parses and stores operator config via
-`config::parse_config`/`config::store`; `shutdown` is a no-op — the extension is
+identity/capabilities), `lifecycle::Guest::init` (parses and stores an optional,
+process-wide baseline config via `config::parse_config`/`config::store` — no host
+actually calls this; `shutdown` is a no-op — the extension is
 stateless, no client or connection pool to drain), `tools::Guest` (`list_tools()` maps
 `tool_meta::all_tools()` into the WIT `ToolDefinition` shape; `invoke_tool` calls the
-private `dispatch()` function, which parses arguments *before* looking up config, so a
-malformed call fails the same way whether or not `init` has run — then routes to the
+private `dispatch()` function, which parses arguments *before* resolving config, so a
+malformed call fails the same way whether or not the extension is configured — then routes to the
 matching `ops::*` function), `validation::Guest` (always valid — this extension does not
 validate designer-authored content), `prompting::Guest` (one static system-prompt
 fragment telling an agent to call `rag_search` before answering from stored knowledge),
@@ -336,7 +356,8 @@ one public function per tool). Two things live here and nowhere else:
 
 - `collection_of()` — the tenant-isolation precedence: `_tenant_overlay.collection` (if
   present, authoritative) → the caller's `collection` argument (only when no overlay
-  pins one) → the operator's configured `collection`. A caller `collection` argument is
+  pins one) → `collection` from the merged config (`config::resolve`'s output — the
+  overlay's, or an `init` baseline's). A caller `collection` argument is
   refused outright whenever an overlay pins one, even when it agrees, and every tool
   resolves this *before* embedding, chunking, or any host call, so a refusal never
   follows a billable side effect. See [Tenant isolation](#tenant-isolation) below.
@@ -552,13 +573,13 @@ should ever be committed.
 
 ## Docs and agent config
 
-- **`README.md`** (751 lines) — the usage-facing document: quick start, configuration
+- **`README.md`** (811 lines) — the usage-facing document: quick start, configuration
   table, secrets, the full tool reference (schemas pulled straight from
   `tool_meta.rs`), a worked three-call example, the knowledge-base view walkthrough,
   four design decisions with the bugs each one fixed, requirements/limits, and its own
   copy of the architecture and testing sections. This document exists specifically not
   to repeat that content.
-- **`AGENTS.md`** (265 lines) — the agent-facing map: file layout, the pure/host-boundary
+- **`AGENTS.md`** (330 lines) — the agent-facing map: file layout, the pure/host-boundary
   split, workflow commands, the three testing layers, the pre-publish self-check
   sequence, the contributed-view rules, tenant-isolation rules, secrets policy, and the
   generated-vs-hand-edited file list. The single most useful file in this repo for an
