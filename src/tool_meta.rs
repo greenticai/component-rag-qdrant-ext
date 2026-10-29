@@ -9,6 +9,10 @@ pub const DELETE_TOOL: &str = "rag_delete";
 pub const ENSURE_TOOL: &str = "rag_collection_ensure";
 pub const LIST_TOOL: &str = "rag_list";
 
+/// The infrastructure resource every tool needs (declared as `x-requires` at
+/// the root of each tool's `input_schema`).
+pub const INFRA_KIND: &str = "vector-store/qdrant";
+
 pub struct ToolMeta {
     pub name: &'static str,
     pub description: &'static str,
@@ -44,6 +48,7 @@ const ACK_OUTPUT: &str = r#"{
 
 const SEARCH_INPUT: &str = r#"{
   "type": "object",
+  "x-requires": [{ "kind": "vector-store/qdrant" }],
   "properties": {
     "query": { "type": "string", "description": "Text to search for. Pass this OR vector, not both." },
     "vector": { "type": "array", "items": { "type": "number" }, "description": "A pre-computed embedding. Pass this OR query, not both." },
@@ -59,6 +64,7 @@ const SEARCH_INPUT: &str = r#"{
 
 const UPSERT_INPUT: &str = r#"{
   "type": "object",
+  "x-requires": [{ "kind": "vector-store/qdrant" }],
   "required": ["id"],
   "properties": {
     "id": { "type": "string", "description": "Point id. Must be an unsigned integer or a UUID." },
@@ -75,6 +81,7 @@ const UPSERT_INPUT: &str = r#"{
 
 const INGEST_INPUT: &str = r#"{
   "type": "object",
+  "x-requires": [{ "kind": "vector-store/qdrant" }],
   "required": ["doc_id", "text"],
   "properties": {
     "doc_id": { "type": "string", "description": "Stable document identifier. Re-ingesting the same doc_id replaces its chunks." },
@@ -86,6 +93,7 @@ const INGEST_INPUT: &str = r#"{
 
 const DELETE_INPUT: &str = r#"{
   "type": "object",
+  "x-requires": [{ "kind": "vector-store/qdrant" }],
   "properties": {
     "ids": { "type": "array", "items": { "type": "string" }, "description": "Point ids to delete. Pass this OR doc_id, not both." },
     "doc_id": { "type": "string", "description": "Delete every chunk of this document. Pass this OR ids, not both." },
@@ -99,6 +107,7 @@ const DELETE_INPUT: &str = r#"{
 
 const ENSURE_INPUT: &str = r#"{
   "type": "object",
+  "x-requires": [{ "kind": "vector-store/qdrant" }],
   "properties": {
     "collection": { "type": "string", "description": "Collection to create. Defaults to the configured one. Rejected when the host supplies a per-tenant collection for the caller." },
     "dimensions": { "type": "integer", "minimum": 1, "description": "Vector width. Defaults to the configured embedding dimensions." },
@@ -108,6 +117,7 @@ const ENSURE_INPUT: &str = r#"{
 
 const LIST_INPUT: &str = r#"{
   "type": "object",
+  "x-requires": [{ "kind": "vector-store/qdrant" }],
   "properties": {
     "limit": { "type": "integer", "minimum": 1, "description": "Max chunks to scan per page (default 50). Chunk counts in the response are only for chunks returned within this page." },
     "offset": { "description": "Opaque page cursor from a previous call's next_page_offset. Omit to start from the first page." },
@@ -757,6 +767,118 @@ mod tests {
                  get an error on every run — the same rule the knowledge view follows."
             );
         }
+    }
+
+    // ---- infrastructure need (vector-store/qdrant) -------------------------
+
+    /// Tool keys present in `describe.json` at 0.5.0. A new key on a tool is
+    /// refused by older designers (`Tool` is `deny_unknown_fields`).
+    const TOOL_KEYS_AT_0_5_0: &[&str] = &[
+        "capabilities",
+        "description",
+        "export",
+        "input_schema",
+        "name",
+        "runtime_ref",
+        "secret_requirements",
+    ];
+
+    fn published_tools() -> Vec<serde_json::Value> {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../describe.json")).expect("describe.json");
+        manifest["contributions"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .clone()
+    }
+
+    /// Mirrors the designer's `requires.rs`: a root `x-requires` array of
+    /// `{kind: string}` objects. The designer repo is not a dependency, so the
+    /// grammar is restated here.
+    fn requires_in_schema(schema: &serde_json::Value) -> Vec<String> {
+        schema
+            .get("x-requires")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i.get("kind").and_then(serde_json::Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn every_tool_declares_the_qdrant_infrastructure_need() {
+        let tools = published_tools();
+        assert_eq!(tools.len(), 6);
+        for entry in &tools {
+            let schema: serde_json::Value =
+                serde_json::from_str(entry["input_schema"].as_str().expect("string schema"))
+                    .expect("schema json");
+            assert_eq!(
+                schema["x-requires"],
+                serde_json::json!([{ "kind": INFRA_KIND }]),
+                "{}: x-requires must sit at the ROOT of input_schema",
+                entry["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn x_requires_is_read_by_the_designers_own_grammar() {
+        for entry in &published_tools() {
+            let schema: serde_json::Value =
+                serde_json::from_str(entry["input_schema"].as_str().unwrap()).unwrap();
+            assert_eq!(requires_in_schema(&schema), vec!["vector-store/qdrant"]);
+        }
+        assert!(requires_in_schema(&serde_json::json!({"type":"object"})).is_empty());
+        // Nested under properties is not a declaration.
+        assert!(
+            requires_in_schema(&serde_json::json!({"properties":{"x-requires":[{"kind":"a/b"}]}}))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn describe_json_declares_no_contributions_key_an_older_designer_would_refuse() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../describe.json")).unwrap();
+        let mut keys: Vec<&str> = manifest["contributions"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["tools", "views"],
+            "Contributions/NodeType/Tool are deny_unknown_fields: a new contributions key \
+             unloads this extension on every older designer. Declare needs with `x-requires` \
+             inside a schema instead."
+        );
+    }
+
+    #[test]
+    fn no_tool_gains_an_unknown_field() {
+        for entry in &published_tools() {
+            for key in entry.as_object().unwrap().keys() {
+                assert!(
+                    TOOL_KEYS_AT_0_5_0.contains(&key.as_str()),
+                    "{}: new tool key {key:?} would be refused by older designers",
+                    entry["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn x_requires_leaves_the_either_or_constraints_intact() {
+        let schema: serde_json::Value = serde_json::from_str(SEARCH_INPUT).unwrap();
+        assert_eq!(schema["oneOf"].as_array().map(Vec::len), Some(2));
+        assert!(schema["properties"].is_object());
     }
 
     /// Not an assertion — a generator. Prints the `contributions.tools` block
