@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use crate::chunk::chunk_text;
 use crate::config::Config;
+use crate::connection::{Connection, resolve_connection};
 use crate::embed::{embed_request, parse_embed_response};
 use crate::error::RagError;
 use crate::host::{HostCalls, HttpRequest, HttpResponse};
@@ -19,7 +20,9 @@ use crate::qdrant::{
 
 /// Secret URIs. These must match `runtime.permissions.secrets` in describe.json
 /// verbatim — the host matches on the exact string (or a `/`-boundary prefix).
-pub const QDRANT_KEY_REF: &str = "secret://rag-qdrant/qdrant_api_key";
+/// The Qdrant connection itself (infra resource, or the legacy key
+/// `crate::connection::LEGACY_KEY_REF`) is resolved by `crate::connection`.
+pub use crate::connection::LEGACY_KEY_REF as QDRANT_KEY_REF;
 pub const EMBEDDING_KEY_REF: &str = "secret://rag-qdrant/embedding_api_key";
 
 fn send<H: HostCalls>(host: &H, req: &HttpRequest) -> Result<HttpResponse, RagError> {
@@ -175,18 +178,17 @@ fn check_width(cfg: &Config, vector: &[f32]) -> Result<(), RagError> {
 
 fn ensure<H: HostCalls>(
     host: &H,
-    cfg: &Config,
+    conn: &Connection,
     collection: &str,
     dimensions: u32,
     distance: &str,
-    qdrant_key: &str,
 ) -> Result<(), RagError> {
     let req = ensure_collection_request(
-        &cfg.qdrant_url,
+        &conn.base_url,
         collection,
         dimensions,
         distance,
-        qdrant_key,
+        &conn.api_key,
     );
     let resp = send(host, &req)?;
     parse_ensure_ack(resp.status, &resp.body)
@@ -203,12 +205,16 @@ pub fn search<H: HostCalls>(
     // Resolved first, ahead of any host call. Embedding before deciding which
     // collection the call is even allowed to touch would bill the operator for
     // an embeddings request that is about to be refused — and, worse, put a
-    // side effect before an authorisation check.
+    // side effect before an authorisation check. (`collection_of` is pure, so
+    // this also keeps its refusals reachable without touching the host.)
     let collection = collection_of(
         cfg,
         input.tenant_overlay.as_ref(),
         input.collection.as_ref(),
     )?;
+    // Next, before any embedding: a missing or invalid Qdrant resource must
+    // fail first and cheaply.
+    let conn = resolve_connection(host, cfg)?;
 
     let vector = match (&input.vector, &input.query) {
         (Some(v), _) => {
@@ -228,14 +234,13 @@ pub fn search<H: HostCalls>(
         }
     };
 
-    let key = secret(host, QDRANT_KEY_REF)?;
     let req = query_request(
-        &cfg.qdrant_url,
+        &conn.base_url,
         collection,
         &vector,
         input.top_k,
         input.filter.as_ref(),
-        &key,
+        &conn.api_key,
     );
     let resp = send(host, &req)?;
     let hits = parse_hits(resp.status, &resp.body)?;
@@ -262,15 +267,13 @@ pub fn upsert<H: HostCalls>(
         ));
     }
 
-    // Resolved first, ahead of any host call. Embedding before deciding which
-    // collection the call is even allowed to touch would bill the operator for
-    // an embeddings request that is about to be refused — and, worse, put a
-    // side effect before an authorisation check.
+    // See `search`: collection, then connection, then any embedding.
     let collection = collection_of(
         cfg,
         input.tenant_overlay.as_ref(),
         input.collection.as_ref(),
     )?;
+    let conn = resolve_connection(host, cfg)?;
 
     let vector = match (&input.vector, &input.text) {
         (Some(v), _) => {
@@ -288,15 +291,7 @@ pub fn upsert<H: HostCalls>(
         }
     };
 
-    let key = secret(host, QDRANT_KEY_REF)?;
-    ensure(
-        host,
-        cfg,
-        collection,
-        cfg.embedding.dimensions,
-        "Cosine",
-        &key,
-    )?;
+    ensure(host, &conn, collection, cfg.embedding.dimensions, "Cosine")?;
 
     let mut payload = input.payload.clone();
     if let (Some(map), Some(text)) = (payload.as_object_mut(), input.text.as_ref()) {
@@ -308,7 +303,7 @@ pub fn upsert<H: HostCalls>(
         vector,
         payload,
     };
-    let req = upsert_request(&cfg.qdrant_url, collection, &[point], &key);
+    let req = upsert_request(&conn.base_url, collection, &[point], &conn.api_key);
     let resp = send(host, &req)?;
     parse_ack(resp.status, &resp.body)?;
     Ok(serde_json::json!({ "ok": true, "id": input.id }))
@@ -345,6 +340,7 @@ pub fn ingest<H: HostCalls>(
         input.tenant_overlay.as_ref(),
         input.collection.as_ref(),
     )?;
+    let conn = resolve_connection(host, cfg)?;
 
     let chunks = chunk_text(&input.text, cfg.chunk.max_chars, cfg.chunk.overlap_chars);
     if chunks.is_empty() {
@@ -354,23 +350,15 @@ pub fn ingest<H: HostCalls>(
     }
 
     let vectors = embed_all(host, cfg, &chunks)?;
-    let key = secret(host, QDRANT_KEY_REF)?;
 
-    ensure(
-        host,
-        cfg,
-        collection,
-        cfg.embedding.dimensions,
-        "Cosine",
-        &key,
-    )?;
+    ensure(host, &conn, collection, cfg.embedding.dimensions, "Cosine")?;
 
     // Delete first. See the doc comment above — the order is the point.
     let del = delete_request(
-        &cfg.qdrant_url,
+        &conn.base_url,
         collection,
         &DeleteSelector::DocId(input.doc_id.clone()),
-        &key,
+        &conn.api_key,
     );
     let del_resp = send(host, &del)?;
     parse_ack(del_resp.status, &del_resp.body)?;
@@ -394,7 +382,7 @@ pub fn ingest<H: HostCalls>(
         })
         .collect();
 
-    let req = upsert_request(&cfg.qdrant_url, collection, &points, &key);
+    let req = upsert_request(&conn.base_url, collection, &points, &conn.api_key);
     let resp = send(host, &req)?;
     parse_ack(resp.status, &resp.body)?;
 
@@ -421,17 +409,13 @@ pub fn delete<H: HostCalls>(
             ));
         }
     };
-    let key = secret(host, QDRANT_KEY_REF)?;
-    let req = delete_request(
-        &cfg.qdrant_url,
-        collection_of(
-            cfg,
-            input.tenant_overlay.as_ref(),
-            input.collection.as_ref(),
-        )?,
-        &selector,
-        &key,
-    );
+    let collection = collection_of(
+        cfg,
+        input.tenant_overlay.as_ref(),
+        input.collection.as_ref(),
+    )?;
+    let conn = resolve_connection(host, cfg)?;
+    let req = delete_request(&conn.base_url, collection, &selector, &conn.api_key);
     let resp = send(host, &req)?;
     parse_ack(resp.status, &resp.body)?;
     Ok(serde_json::json!({ "ok": true }))
@@ -444,14 +428,14 @@ pub fn ensure_collection<H: HostCalls>(
     cfg: &Config,
     input: &EnsureInput,
 ) -> Result<Value, RagError> {
-    let key = secret(host, QDRANT_KEY_REF)?;
     let collection = collection_of(
         cfg,
         input.tenant_overlay.as_ref(),
         input.collection.as_ref(),
     )?;
+    let conn = resolve_connection(host, cfg)?;
     let dimensions = input.dimensions.unwrap_or(cfg.embedding.dimensions);
-    ensure(host, cfg, collection, dimensions, &input.distance, &key)?;
+    ensure(host, &conn, collection, dimensions, &input.distance)?;
     Ok(serde_json::json!({
         "ok": true,
         "collection": collection,
@@ -535,18 +519,19 @@ struct DocGroup {
 /// # Errors
 /// Propagates secret, transport and Qdrant errors.
 pub fn list<H: HostCalls>(host: &H, cfg: &Config, input: &ListInput) -> Result<Value, RagError> {
-    let key = secret(host, QDRANT_KEY_REF)?;
+    let collection = collection_of(
+        cfg,
+        input.tenant_overlay.as_ref(),
+        input.collection.as_ref(),
+    )?;
+    let conn = resolve_connection(host, cfg)?;
     let req = scroll_request(
-        &cfg.qdrant_url,
-        collection_of(
-            cfg,
-            input.tenant_overlay.as_ref(),
-            input.collection.as_ref(),
-        )?,
+        &conn.base_url,
+        collection,
         input.limit,
         input.offset.as_ref(),
         input.filter.as_ref(),
-        &key,
+        &conn.api_key,
     );
     let resp = send(host, &req)?;
     let page = parse_scroll(resp.status, &resp.body)?;
@@ -635,7 +620,15 @@ mod tests {
         }
 
         fn secret(&self, uri: &str) -> Result<String, String> {
-            self.secrets.get(uri).map_err(|e| e.to_string())
+            // Like the real host, an infra resource nobody connected reads as
+            // "not connected" (which selects the legacy source).
+            self.secrets.get(uri).map_err(|e| {
+                if uri == crate::infra::URI {
+                    "resource vector-store/qdrant is not connected to this deployment".to_string()
+                } else {
+                    e.to_string()
+                }
+            })
         }
     }
 

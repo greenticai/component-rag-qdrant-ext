@@ -13,6 +13,7 @@ pub mod bindings;
 
 pub mod chunk;
 pub mod config;
+pub mod connection;
 pub mod embed;
 pub mod error;
 pub mod host;
