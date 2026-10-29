@@ -24,6 +24,8 @@ pub mod qdrant;
 pub mod tool_meta;
 
 #[cfg(test)]
+mod ops_conformance_tests;
+#[cfg(test)]
 mod ops_error_tests;
 #[cfg(test)]
 mod ops_infra_tests;
