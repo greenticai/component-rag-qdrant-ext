@@ -68,6 +68,53 @@ impl Connection {
     }
 }
 
+impl Connection {
+    /// `host:port` of the Qdrant being called (no scheme, path or query), for
+    /// diagnosing a wrong host or port without printing a URL.
+    #[must_use]
+    pub fn host_port(&self) -> String {
+        let rest = self
+            .base_url
+            .split_once("://")
+            .map_or(self.base_url.as_str(), |(_, r)| r);
+        let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+        authority.rsplit('@').next().unwrap_or("").to_string()
+    }
+
+    /// How an error should name the thing that failed.
+    #[must_use]
+    pub fn target(&self) -> String {
+        match self.source {
+            Source::Infra => format!("the {} resource at {}", infra::KIND, self.host_port()),
+            Source::Legacy => format!("Qdrant at {} (legacy configuration)", self.host_port()),
+        }
+    }
+
+    /// Say WHICH credential Qdrant rejected, and scrub the key from the text.
+    #[must_use]
+    pub fn attribute(&self, err: RagError) -> RagError {
+        match err {
+            RagError::PermissionDenied(m) if m.starts_with(crate::qdrant::REJECTED_PREFIX) => {
+                let detail = m
+                    .strip_prefix(crate::qdrant::REJECTED_PREFIX)
+                    .unwrap_or_default();
+                let who = match self.source {
+                    Source::Infra => format!(
+                        "the connected resource's credential was rejected by {}",
+                        self.target()
+                    ),
+                    Source::Legacy => format!(
+                        "the legacy credential {LEGACY_KEY_REF} was rejected by {}",
+                        self.target()
+                    ),
+                };
+                RagError::PermissionDenied(redact(&format!("{who}{detail}"), &self.api_key))
+            }
+            other => other,
+        }
+    }
+}
+
 fn name_char_ok(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')
 }
@@ -111,6 +158,21 @@ fn validate_prefix(prefix: &str) -> Result<(), RagError> {
         )));
     }
     Ok(())
+}
+
+/// Replace every occurrence of `secret` in `msg`. No-op for an empty secret.
+#[must_use]
+pub fn redact(msg: &str, secret: &str) -> String {
+    if secret.is_empty() {
+        return msg.to_string();
+    }
+    msg.replace(secret, "<redacted>")
+}
+
+/// Scrub every non-empty secret in `secrets` from `msg`.
+#[must_use]
+pub fn redact_all(msg: &str, secrets: &[&str]) -> String {
+    secrets.iter().fold(msg.to_string(), |m, s| redact(&m, s))
 }
 
 fn infra_error(err: InfraError) -> RagError {

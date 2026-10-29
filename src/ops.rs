@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use crate::chunk::chunk_text;
 use crate::config::Config;
-use crate::connection::{Connection, resolve_connection};
+use crate::connection::{Connection, redact_all, resolve_connection};
 use crate::embed::{embed_request, parse_embed_response};
 use crate::error::RagError;
 use crate::host::{HostCalls, HttpRequest, HttpResponse};
@@ -25,14 +25,47 @@ use crate::qdrant::{
 pub use crate::connection::LEGACY_KEY_REF as QDRANT_KEY_REF;
 pub const EMBEDDING_KEY_REF: &str = "secret://rag-qdrant/embedding_api_key";
 
-fn send<H: HostCalls>(host: &H, req: &HttpRequest) -> Result<HttpResponse, RagError> {
-    host.fetch(req)
-        .map_err(|e| RagError::Internal(format!("host http::fetch failed: {e}")))
+/// Issue one request. Every secret in `scrub` is removed from a transport
+/// error and from a non-2xx body before either can reach an error message
+/// (a failing request URL or an upstream error page may echo a key). `target`
+/// names what was being called and never contains a credential.
+fn send<H: HostCalls>(
+    host: &H,
+    req: &HttpRequest,
+    target: &str,
+    scrub: &[&str],
+) -> Result<HttpResponse, RagError> {
+    let mut resp = host.fetch(req).map_err(|e| {
+        RagError::Internal(format!(
+            "host http::fetch failed ({target}): {}",
+            redact_all(&e, scrub)
+        ))
+    })?;
+    if !(200..300).contains(&resp.status) {
+        let text = String::from_utf8_lossy(&resp.body);
+        if scrub.iter().any(|s| !s.is_empty() && text.contains(s)) {
+            resp.body = redact_all(&text, scrub).into_bytes();
+        }
+    }
+    Ok(resp)
 }
 
-fn secret<H: HostCalls>(host: &H, uri: &str) -> Result<String, RagError> {
-    host.secret(uri)
-        .map_err(|e| RagError::PermissionDenied(format!("host could not resolve {uri}: {e}")))
+/// A request to the connected Qdrant, scrubbed of its credential.
+fn qsend<H: HostCalls>(
+    host: &H,
+    conn: &Connection,
+    req: &HttpRequest,
+) -> Result<HttpResponse, RagError> {
+    send(host, req, &conn.target(), &[conn.api_key.as_str()])
+}
+
+fn secret<H: HostCalls>(host: &H, uri: &str, scrub: &[&str]) -> Result<String, RagError> {
+    host.secret(uri).map_err(|e| {
+        RagError::PermissionDenied(format!(
+            "host could not resolve {uri}: {}",
+            redact_all(&e, scrub)
+        ))
+    })
 }
 
 /// Resolve which Qdrant collection this call reads and writes.
@@ -146,11 +179,18 @@ fn collection_of<'a>(
 fn embed_all<H: HostCalls>(
     host: &H,
     cfg: &Config,
+    conn: &Connection,
     texts: &[String],
 ) -> Result<Vec<Vec<f32>>, RagError> {
-    let key = secret(host, EMBEDDING_KEY_REF)?;
+    let scrub = [conn.api_key.as_str()];
+    let key = secret(host, EMBEDDING_KEY_REF, &scrub)?;
     let req = embed_request(&cfg.embedding, texts, &key);
-    let resp = send(host, &req)?;
+    let resp = send(
+        host,
+        &req,
+        "embeddings API",
+        &[key.as_str(), conn.api_key.as_str()],
+    )?;
     let vectors = parse_embed_response(resp.status, &resp.body, cfg.embedding.dimensions)?;
     if vectors.len() != texts.len() {
         return Err(RagError::Internal(format!(
@@ -190,8 +230,8 @@ fn ensure<H: HostCalls>(
         distance,
         &conn.api_key,
     );
-    let resp = send(host, &req)?;
-    parse_ensure_ack(resp.status, &resp.body)
+    let resp = qsend(host, conn, &req)?;
+    parse_ensure_ack(resp.status, &resp.body).map_err(|e| conn.attribute(e))
 }
 
 /// # Errors
@@ -222,7 +262,7 @@ pub fn search<H: HostCalls>(
             check_width(cfg, v)?;
             v.clone()
         }
-        (None, Some(q)) => embed_all(host, cfg, std::slice::from_ref(q))?
+        (None, Some(q)) => embed_all(host, cfg, &conn, std::slice::from_ref(q))?
             .into_iter()
             .next()
             .ok_or_else(|| RagError::Internal("embeddings API returned no vector".into()))?,
@@ -243,8 +283,8 @@ pub fn search<H: HostCalls>(
         input.filter.as_ref(),
         &conn.api_key,
     );
-    let resp = send(host, &req)?;
-    let hits = parse_hits(resp.status, &resp.body)?;
+    let resp = qsend(host, &conn, &req)?;
+    let hits = parse_hits(resp.status, &resp.body).map_err(|e| conn.attribute(e))?;
 
     let hits: Vec<Value> = hits
         .into_iter()
@@ -282,7 +322,7 @@ pub fn upsert<H: HostCalls>(
             check_width(cfg, v)?;
             v.clone()
         }
-        (None, Some(t)) => embed_all(host, cfg, std::slice::from_ref(t))?
+        (None, Some(t)) => embed_all(host, cfg, &conn, std::slice::from_ref(t))?
             .into_iter()
             .next()
             .ok_or_else(|| RagError::Internal("embeddings API returned no vector".into()))?,
@@ -306,8 +346,8 @@ pub fn upsert<H: HostCalls>(
         payload,
     };
     let req = upsert_request(&conn.base_url, &physical, &[point], &conn.api_key);
-    let resp = send(host, &req)?;
-    parse_ack(resp.status, &resp.body)?;
+    let resp = qsend(host, &conn, &req)?;
+    parse_ack(resp.status, &resp.body).map_err(|e| conn.attribute(e))?;
     Ok(serde_json::json!({ "ok": true, "id": input.id }))
 }
 
@@ -352,7 +392,7 @@ pub fn ingest<H: HostCalls>(
         ));
     }
 
-    let vectors = embed_all(host, cfg, &chunks)?;
+    let vectors = embed_all(host, cfg, &conn, &chunks)?;
 
     ensure(host, &conn, &physical, cfg.embedding.dimensions, "Cosine")?;
 
@@ -363,8 +403,8 @@ pub fn ingest<H: HostCalls>(
         &DeleteSelector::DocId(input.doc_id.clone()),
         &conn.api_key,
     );
-    let del_resp = send(host, &del)?;
-    parse_ack(del_resp.status, &del_resp.body)?;
+    let del_resp = qsend(host, &conn, &del)?;
+    parse_ack(del_resp.status, &del_resp.body).map_err(|e| conn.attribute(e))?;
 
     let points: Vec<Point> = chunks
         .iter()
@@ -386,8 +426,8 @@ pub fn ingest<H: HostCalls>(
         .collect();
 
     let req = upsert_request(&conn.base_url, &physical, &points, &conn.api_key);
-    let resp = send(host, &req)?;
-    parse_ack(resp.status, &resp.body)?;
+    let resp = qsend(host, &conn, &req)?;
+    parse_ack(resp.status, &resp.body).map_err(|e| conn.attribute(e))?;
 
     Ok(serde_json::json!({
         "ok": true,
@@ -420,8 +460,8 @@ pub fn delete<H: HostCalls>(
     let conn = resolve_connection(host, cfg)?;
     let physical = conn.physical(collection)?;
     let req = delete_request(&conn.base_url, &physical, &selector, &conn.api_key);
-    let resp = send(host, &req)?;
-    parse_ack(resp.status, &resp.body)?;
+    let resp = qsend(host, &conn, &req)?;
+    parse_ack(resp.status, &resp.body).map_err(|e| conn.attribute(e))?;
     Ok(serde_json::json!({ "ok": true }))
 }
 
@@ -539,8 +579,8 @@ pub fn list<H: HostCalls>(host: &H, cfg: &Config, input: &ListInput) -> Result<V
         input.filter.as_ref(),
         &conn.api_key,
     );
-    let resp = send(host, &req)?;
-    let page = parse_scroll(resp.status, &resp.body)?;
+    let resp = qsend(host, &conn, &req)?;
+    let page = parse_scroll(resp.status, &resp.body).map_err(|e| conn.attribute(e))?;
 
     let mut order: Vec<String> = Vec::new();
     let mut by_doc: std::collections::HashMap<String, DocGroup> = std::collections::HashMap::new();
