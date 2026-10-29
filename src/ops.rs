@@ -215,6 +215,7 @@ pub fn search<H: HostCalls>(
     // Next, before any embedding: a missing or invalid Qdrant resource must
     // fail first and cheaply.
     let conn = resolve_connection(host, cfg)?;
+    let physical = conn.physical(collection)?;
 
     let vector = match (&input.vector, &input.query) {
         (Some(v), _) => {
@@ -236,7 +237,7 @@ pub fn search<H: HostCalls>(
 
     let req = query_request(
         &conn.base_url,
-        collection,
+        &physical,
         &vector,
         input.top_k,
         input.filter.as_ref(),
@@ -274,6 +275,7 @@ pub fn upsert<H: HostCalls>(
         input.collection.as_ref(),
     )?;
     let conn = resolve_connection(host, cfg)?;
+    let physical = conn.physical(collection)?;
 
     let vector = match (&input.vector, &input.text) {
         (Some(v), _) => {
@@ -291,7 +293,7 @@ pub fn upsert<H: HostCalls>(
         }
     };
 
-    ensure(host, &conn, collection, cfg.embedding.dimensions, "Cosine")?;
+    ensure(host, &conn, &physical, cfg.embedding.dimensions, "Cosine")?;
 
     let mut payload = input.payload.clone();
     if let (Some(map), Some(text)) = (payload.as_object_mut(), input.text.as_ref()) {
@@ -303,7 +305,7 @@ pub fn upsert<H: HostCalls>(
         vector,
         payload,
     };
-    let req = upsert_request(&conn.base_url, collection, &[point], &conn.api_key);
+    let req = upsert_request(&conn.base_url, &physical, &[point], &conn.api_key);
     let resp = send(host, &req)?;
     parse_ack(resp.status, &resp.body)?;
     Ok(serde_json::json!({ "ok": true, "id": input.id }))
@@ -341,6 +343,7 @@ pub fn ingest<H: HostCalls>(
         input.collection.as_ref(),
     )?;
     let conn = resolve_connection(host, cfg)?;
+    let physical = conn.physical(collection)?;
 
     let chunks = chunk_text(&input.text, cfg.chunk.max_chars, cfg.chunk.overlap_chars);
     if chunks.is_empty() {
@@ -351,12 +354,12 @@ pub fn ingest<H: HostCalls>(
 
     let vectors = embed_all(host, cfg, &chunks)?;
 
-    ensure(host, &conn, collection, cfg.embedding.dimensions, "Cosine")?;
+    ensure(host, &conn, &physical, cfg.embedding.dimensions, "Cosine")?;
 
     // Delete first. See the doc comment above — the order is the point.
     let del = delete_request(
         &conn.base_url,
-        collection,
+        &physical,
         &DeleteSelector::DocId(input.doc_id.clone()),
         &conn.api_key,
     );
@@ -382,7 +385,7 @@ pub fn ingest<H: HostCalls>(
         })
         .collect();
 
-    let req = upsert_request(&conn.base_url, collection, &points, &conn.api_key);
+    let req = upsert_request(&conn.base_url, &physical, &points, &conn.api_key);
     let resp = send(host, &req)?;
     parse_ack(resp.status, &resp.body)?;
 
@@ -415,7 +418,8 @@ pub fn delete<H: HostCalls>(
         input.collection.as_ref(),
     )?;
     let conn = resolve_connection(host, cfg)?;
-    let req = delete_request(&conn.base_url, collection, &selector, &conn.api_key);
+    let physical = conn.physical(collection)?;
+    let req = delete_request(&conn.base_url, &physical, &selector, &conn.api_key);
     let resp = send(host, &req)?;
     parse_ack(resp.status, &resp.body)?;
     Ok(serde_json::json!({ "ok": true }))
@@ -434,8 +438,9 @@ pub fn ensure_collection<H: HostCalls>(
         input.collection.as_ref(),
     )?;
     let conn = resolve_connection(host, cfg)?;
+    let physical = conn.physical(collection)?;
     let dimensions = input.dimensions.unwrap_or(cfg.embedding.dimensions);
-    ensure(host, &conn, collection, dimensions, &input.distance)?;
+    ensure(host, &conn, &physical, dimensions, &input.distance)?;
     Ok(serde_json::json!({
         "ok": true,
         "collection": collection,
@@ -525,9 +530,10 @@ pub fn list<H: HostCalls>(host: &H, cfg: &Config, input: &ListInput) -> Result<V
         input.collection.as_ref(),
     )?;
     let conn = resolve_connection(host, cfg)?;
+    let physical = conn.physical(collection)?;
     let req = scroll_request(
         &conn.base_url,
-        collection,
+        &physical,
         input.limit,
         input.offset.as_ref(),
         input.filter.as_ref(),
@@ -597,40 +603,7 @@ mod tests {
         CannedResponse, MockHttpClient, MockSecretsBackend,
     };
 
-    /// Adapts the SDK's mocks to the extension's `HostCalls` trait.
-    struct TestHost {
-        http: MockHttpClient,
-        secrets: MockSecretsBackend,
-    }
-
-    impl HostCalls for TestHost {
-        fn fetch(&self, req: &HttpRequest) -> Result<HttpResponse, String> {
-            let headers: Vec<(&str, &str)> = req
-                .headers
-                .iter()
-                .map(|(k, v)| (k.as_str(), v.as_str()))
-                .collect();
-            let resp = self
-                .http
-                .fetch(&req.method, &req.url, &headers, req.body.clone());
-            Ok(HttpResponse {
-                status: resp.status,
-                body: resp.body,
-            })
-        }
-
-        fn secret(&self, uri: &str) -> Result<String, String> {
-            // Like the real host, an infra resource nobody connected reads as
-            // "not connected" (which selects the legacy source).
-            self.secrets.get(uri).map_err(|e| {
-                if uri == crate::infra::URI {
-                    "resource vector-store/qdrant is not connected to this deployment".to_string()
-                } else {
-                    e.to_string()
-                }
-            })
-        }
-    }
+    use crate::testkit::TestHost;
 
     const BASE: &str = "https://c.qdrant.io:6333";
     const EMBED_URL: &str = "https://api.openai.com/v1/embeddings";

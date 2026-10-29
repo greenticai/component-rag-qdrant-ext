@@ -23,6 +23,11 @@ pub mod ops;
 pub mod qdrant;
 pub mod tool_meta;
 
+#[cfg(test)]
+mod ops_infra_tests;
+#[cfg(test)]
+mod testkit;
+
 use bindings::exports::greentic::extension_base::{lifecycle, manifest};
 use bindings::exports::greentic::extension_design::{knowledge, prompting, tools, validation};
 use bindings::greentic::extension_base::types;
