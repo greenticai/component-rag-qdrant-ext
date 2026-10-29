@@ -55,6 +55,7 @@
         "https://api.openai.com/*"
       ],
       "secrets": [
+        "secret://infra/vector_store_qdrant",
         "secret://rag-qdrant/qdrant_api_key",
         "secret://rag-qdrant/embedding_api_key"
       ],
@@ -68,9 +69,9 @@
   "requiredSecrets": [
     {
       "key": "rag-qdrant/qdrant_api_key",
-      "required": true,
+      "required": false,
       "format": "text",
-      "description": "Qdrant API key, sent as the `api-key` header. Resolved by the host and never returned to the model."
+      "description": "Used by the legacy source only: the Qdrant API key, sent as the `api-key` header when no vector-store/qdrant resource is connected. Ignored once a Qdrant resource is connected; its credential is used instead. Resolved by the host and never returned to the model."
     },
     {
       "key": "rag-qdrant/embedding_api_key",
@@ -79,7 +80,7 @@
       "description": "Bearer token for the embeddings API configured in `embedding.base_url`."
     }
   ],
-  "configSchema": "{\"type\": \"object\", \"title\": \"RAG (Qdrant) configuration\", \"description\": \"Where to store and search this extension's vector data.\", \"properties\": {\"qdrant_url\": {\"type\": \"string\", \"format\": \"uri\", \"title\": \"Qdrant server URL\", \"description\": \"The address of your Qdrant instance, including scheme and port. This is where the extension stores and searches vector data. For Qdrant Cloud, copy the cluster URL from your cluster's dashboard; for a self-hosted instance, use its reachable address.\", \"examples\": [\"https://your-cluster-id.your-region.aws.cloud.qdrant.io:6333\"]}, \"collection\": {\"type\": \"string\", \"minLength\": 1, \"title\": \"Collection name\", \"description\": \"The Qdrant collection this extension reads from and writes to. If it does not exist yet, run the rag_collection_ensure tool once to create it. In a multi-tenant deployment, give each tenant its own collection name.\", \"examples\": [\"knowledge-base\"]}, \"require_tenant_overlay\": {\"type\": \"boolean\", \"title\": \"Require a per-tenant collection\", \"description\": \"When turned on, the extension refuses any request from a tenant that has not been assigned its own collection, instead of silently falling back to the collection above. Turn this on for multi-tenant deployments to stop one tenant's data from mixing with another's. Leave it off for a single-tenant or local install.\", \"default\": false}}, \"required\": [\"qdrant_url\", \"collection\"]}",
+  "configSchema": "{\"type\": \"object\", \"title\": \"RAG (Qdrant) configuration\", \"description\": \"Where to store and search this extension's vector data.\", \"properties\": {\"qdrant_url\": {\"type\": \"string\", \"format\": \"uri\", \"title\": \"Qdrant server URL (legacy)\", \"description\": \"This is the legacy source: the address of your Qdrant instance, including scheme and port. It is ignored when a Qdrant resource is connected in workspace settings (Resources), which is the recommended way to point this extension at Qdrant. It is used only while no resource is connected. For Qdrant Cloud, copy the cluster URL from your cluster's dashboard; for a self-hosted instance, use its reachable address.\", \"examples\": [\"https://your-cluster-id.your-region.aws.cloud.qdrant.io:6333\"]}, \"collection\": {\"type\": \"string\", \"minLength\": 1, \"title\": \"Collection name\", \"description\": \"The Qdrant collection this extension reads from and writes to. If it does not exist yet, run the rag_collection_ensure tool once to create it. In a multi-tenant deployment, give each tenant its own collection name.\", \"examples\": [\"knowledge-base\"]}, \"require_tenant_overlay\": {\"type\": \"boolean\", \"title\": \"Require a per-tenant collection\", \"description\": \"When turned on, the extension refuses any request from a tenant that has not been assigned its own collection, instead of silently falling back to the collection above. Turn this on for multi-tenant deployments to stop one tenant's data from mixing with another's. Leave it off for a single-tenant or local install.\", \"default\": false}}, \"required\": [\"collection\"]}",
   "contributions": {
     "tools": [
       {
@@ -96,7 +97,7 @@
           {
             "format": "text",
             "key": "rag-qdrant/qdrant_api_key",
-            "required": true
+            "required": false
           },
           {
             "format": "text",
@@ -119,7 +120,7 @@
           {
             "format": "text",
             "key": "rag-qdrant/qdrant_api_key",
-            "required": true
+            "required": false
           },
           {
             "format": "text",
@@ -142,7 +143,7 @@
           {
             "format": "text",
             "key": "rag-qdrant/qdrant_api_key",
-            "required": true
+            "required": false
           },
           {
             "format": "text",
@@ -165,7 +166,7 @@
           {
             "format": "text",
             "key": "rag-qdrant/qdrant_api_key",
-            "required": true
+            "required": false
           },
           {
             "format": "text",
@@ -188,7 +189,7 @@
           {
             "format": "text",
             "key": "rag-qdrant/qdrant_api_key",
-            "required": true
+            "required": false
           },
           {
             "format": "text",
@@ -211,7 +212,7 @@
           {
             "format": "text",
             "key": "rag-qdrant/qdrant_api_key",
-            "required": true
+            "required": false
           },
           {
             "format": "text",

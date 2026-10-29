@@ -464,7 +464,7 @@ mod tests {
             .expect("configSchema must declare properties");
         assert!(
             properties.contains_key("qdrant_url"),
-            "configSchema must name qdrant_url — config.rs::resolve treats it as required"
+            "configSchema must still name qdrant_url — it is the legacy source"
         );
         assert!(
             properties.contains_key("collection"),
@@ -478,8 +478,8 @@ mod tests {
             .map(|v| v.as_str().unwrap_or_default())
             .collect::<Vec<_>>();
         assert!(
-            required.contains(&"qdrant_url"),
-            "qdrant_url has no working default and must be required"
+            !required.contains(&"qdrant_url"),
+            "qdrant_url is the legacy source only; a connected Qdrant resource replaces it"
         );
         assert!(
             required.contains(&"collection"),
@@ -881,6 +881,94 @@ mod tests {
         assert!(schema["properties"].is_object());
     }
 
+    fn describe() -> serde_json::Value {
+        serde_json::from_str(include_str!("../describe.json")).expect("describe.json")
+    }
+
+    #[test]
+    fn describe_json_permits_the_infra_secret_uri_verbatim() {
+        let d = describe();
+        let secrets: Vec<&str> = d["runtime"]["permissions"]["secrets"]
+            .as_array()
+            .expect("permissions.secrets")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert!(secrets.contains(&crate::infra::URI), "{secrets:?}");
+        assert!(secrets.contains(&"secret://rag-qdrant/qdrant_api_key"));
+        assert!(secrets.contains(&"secret://rag-qdrant/embedding_api_key"));
+    }
+
+    #[test]
+    fn ops_secret_uris_are_all_declared() {
+        let d = describe();
+        let declared: Vec<&str> = d["runtime"]["permissions"]["secrets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        for uri in [
+            crate::infra::URI,
+            crate::connection::LEGACY_KEY_REF,
+            crate::ops::EMBEDDING_KEY_REF,
+        ] {
+            assert!(
+                declared.contains(&uri),
+                "{uri} is read by the code but not declared"
+            );
+        }
+    }
+
+    #[test]
+    fn the_qdrant_api_key_is_no_longer_required() {
+        let d = describe();
+        let find = |list: &serde_json::Value, key: &str| -> serde_json::Value {
+            list.as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["key"] == key)
+                .unwrap_or_else(|| panic!("no {key}"))
+                .clone()
+        };
+        let top = &d["requiredSecrets"];
+        assert_eq!(find(top, "rag-qdrant/qdrant_api_key")["required"], false);
+        assert!(
+            find(top, "rag-qdrant/qdrant_api_key")["description"]
+                .as_str()
+                .unwrap()
+                .contains("legacy")
+        );
+        assert_eq!(find(top, "rag-qdrant/embedding_api_key")["required"], true);
+        for tool in d["contributions"]["tools"].as_array().unwrap() {
+            let reqs = &tool["secret_requirements"];
+            assert_eq!(find(reqs, "rag-qdrant/qdrant_api_key")["required"], false);
+            assert_eq!(find(reqs, "rag-qdrant/embedding_api_key")["required"], true);
+        }
+    }
+
+    #[test]
+    fn config_schema_marks_qdrant_url_as_legacy() {
+        let d = describe();
+        let cs: serde_json::Value =
+            serde_json::from_str(d["configSchema"].as_str().unwrap()).unwrap();
+        let desc = cs["properties"]["qdrant_url"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(desc.contains("legacy"), "{desc}");
+        assert!(
+            desc.contains("ignored when a Qdrant resource is connected"),
+            "{desc}"
+        );
+        assert!(
+            !cs["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "qdrant_url")
+        );
+    }
+
     /// Not an assertion — a generator. Prints the `contributions.tools` block
     /// for describe.json so the schemas are never hand-copied out of sync.
     /// Run: `cargo test print_contributions -- --ignored --nocapture`
@@ -899,7 +987,7 @@ mod tests {
                     "description": t.description,
                     "input_schema": t.input_schema_json,
                     "secret_requirements": [
-                        {"key": "rag-qdrant/qdrant_api_key", "required": true, "format": "text"},
+                        {"key": "rag-qdrant/qdrant_api_key", "required": false, "format": "text"},
                         {"key": "rag-qdrant/embedding_api_key", "required": true, "format": "text"}
                     ]
                 })
