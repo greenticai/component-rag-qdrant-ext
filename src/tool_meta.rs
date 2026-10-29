@@ -36,14 +36,15 @@ const HITS_OUTPUT: &str = r#"{
           "payload": { "type": "object" }
         }
       }
-    }
+    },
+    "source": { "type": "string", "enum": ["infra", "legacy"], "description": "Which connection served the call: a connected vector-store/qdrant resource (infra) or the legacy qdrant_url configuration (legacy)." }
   }
 }"#;
 
 const ACK_OUTPUT: &str = r#"{
   "type": "object",
   "required": ["ok"],
-  "properties": { "ok": { "type": "boolean" } }
+  "properties": { "ok": { "type": "boolean" }, "source": { "type": "string", "enum": ["infra", "legacy"], "description": "Which connection served the call: a connected vector-store/qdrant resource (infra) or the legacy qdrant_url configuration (legacy)." } }
 }"#;
 
 const SEARCH_INPUT: &str = r#"{
@@ -141,7 +142,8 @@ const LIST_OUTPUT: &str = r#"{
         }
       }
     },
-    "next_page_offset": { "description": "Present only when another page exists. Pass verbatim as `offset` on the next call." }
+    "next_page_offset": { "description": "Present only when another page exists. Pass verbatim as `offset` on the next call." },
+    "source": { "type": "string", "enum": ["infra", "legacy"], "description": "Which connection served the call: a connected vector-store/qdrant resource (infra) or the legacy qdrant_url configuration (legacy)." }
   }
 }"#;
 

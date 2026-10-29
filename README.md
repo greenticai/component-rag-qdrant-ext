@@ -98,7 +98,7 @@ the cluster. See [Collections and tenancy](#collections-and-tenancy).
 
 ### Connect a Qdrant resource (recommended)
 
-Since `0.6.0` this extension declares the **`vector-store/qdrant`**
+This extension declares the **`vector-store/qdrant`**
 infrastructure resource as a need: `"x-requires": [{"kind": "vector-store/qdrant"}]`
 sits at the root of every tool's `input_schema` in `describe.json`. The
 designer's deploy gate refuses to deploy a unit that uses this extension until a
@@ -117,6 +117,30 @@ credential and `extras`. The extension reads it with `host.secrets.get`
 | No resource connected, overlay/baseline `qdrant_url` set | The **legacy** source: `qdrant_url` + `secret://rag-qdrant/qdrant_api_key`. |
 | Neither | A named error mentioning `vector-store/qdrant`. There is no default host. |
 | A resource is connected but unreadable, malformed, or of a newer document version | An error. It **never** falls back to the legacy source: a broken credential must not quietly route traffic to another cluster. |
+
+**Which source served a call.** Every tool output carries a non-secret
+`source` (`"infra"` for a connected resource, `"legacy"` for the `qdrant_url`
+configuration). The host reports "not connected" in different words per lane,
+and all of them select the legacy source when a `qdrant_url` is configured
+(classification is on the phrase, whether the host error is a `NotFound` or a
+`Backend` error):
+
+| Lane | Host wording (phrase matched) |
+|---|---|
+| In-process designer (Run Demo, in-process Test chat, tool invoke) | `secret not found: secret://infra/...` |
+| Deployed unit (Plan B runner) | `... is not connected to this deployment` |
+| Out-of-process serve path | `... not available on the out-of-process serve path` |
+| Test-chat runner sidecar | the serve-path wording above |
+
+A deployed worker whose infra staging failed (or was never run: unit-scoped
+re-ships, session lanes, operator-env) is indistinguishable from "nothing
+connected" and **silently uses the legacy configuration**, reading and writing
+unprefixed collection names. Check `source` in the tool output to confirm which
+cluster was used.
+
+Known gap: the sandbox allow-list in `describe.json` names no port, which
+matches 443 only, so a Qdrant on `:6333` is refused by the runtime sandbox.
+This is tracked as a separate task and is not fixed in this release.
 
 **Isolation inside a shared instance.** The resource's `extras.collection_prefix`
 is prepended to every collection name (`connection::physical_collection`):
@@ -223,7 +247,7 @@ none exists yet.
 
 `rag-qdrant/embedding_api_key` (required: the embeddings API key; no embedding
 resource kind exists yet) and, for the legacy source only,
-`rag-qdrant/qdrant_api_key` (optional since `0.6.0`). The connected Qdrant
+`rag-qdrant/qdrant_api_key` (optional). The connected Qdrant
 resource's credential arrives through `secret://infra/vector_store_qdrant` and is
 declared in `runtime.permissions.secrets` too.
 
@@ -718,7 +742,7 @@ allowed to import `bindings::`. Everywhere else — `ops.rs`, `qdrant.rs`,
 `embed.rs`, `chunk.rs`, `config.rs`, `input.rs`, `error.rs` — takes `&impl
 HostCalls` generically, and tests substitute the SDK's `MockHttpClient` /
 `MockSecretsBackend` (from `greentic-extension-sdk-testing`) instead of a real
-transport. That's what makes 136 tests run in milliseconds on the host instead
+transport. That's what makes 201 tests run in milliseconds on the host instead
 of requiring a WASM runtime or a live Qdrant cluster.
 
 `src/ops.rs` is the only module that sequences more than one host call for a
@@ -737,12 +761,12 @@ before writing your first tool.
 ## Testing
 
 ```
-cargo test                    # 136 tests, ~milliseconds, no WASM runtime
+cargo test                    # 201 tests, ~milliseconds, no WASM runtime
 ./ci/local_check.sh           # fmt + clippy -D warnings + test + build
 gtdx validate && gtdx lint    # describe.json against schema + cross-field invariants
 ```
 
-There are 136 unit tests and zero integration tests against a real Qdrant.
+There are 201 unit tests and zero integration tests against a real Qdrant.
 That is the point of the pure/host-boundary split above: every tool's logic —
 argument validation, request construction, response parsing, and the
 ordering across multiple host calls — runs against `MockHttpClient` /

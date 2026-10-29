@@ -126,7 +126,9 @@ fn two_tenants_on_one_instance_never_share_a_physical_name() {
 fn no_tool_lists_collections() {
     let host = infra_host("acme__", 1);
     run_all(&host, None);
-    for c in host.http.calls() {
+    let calls = host.http.calls();
+    assert!(!calls.is_empty(), "no HTTP calls were made");
+    for c in calls {
         let path = c.url.split("://").nth(1).unwrap_or("");
         let path = path.split_once('/').map_or("", |(_, p)| p);
         assert!(

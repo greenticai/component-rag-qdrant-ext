@@ -68,6 +68,17 @@ impl Connection {
     }
 }
 
+impl Source {
+    /// Non-secret label reported in tool outputs.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Source::Infra => "infra",
+            Source::Legacy => "legacy",
+        }
+    }
+}
+
 impl Connection {
     /// `host:port` of the Qdrant being called (no scheme, path or query), for
     /// diagnosing a wrong host or port without printing a URL.
@@ -239,12 +250,8 @@ fn legacy<H: HostCalls>(host: &H, cfg: &Config) -> Result<Connection, RagError> 
     }
     let api_key = host.secret(LEGACY_KEY_REF).map_err(|e| {
         // No secret value is known on this path (the infra resource is not
-        // connected, the legacy key failed to load), but the host text goes
-        // through the same scrubber as every other wrapped message.
-        RagError::PermissionDenied(format!(
-            "host could not resolve {LEGACY_KEY_REF}: {}",
-            redact_all(&e, &[])
-        ))
+        // connected, the legacy key failed to load).
+        RagError::PermissionDenied(format!("host could not resolve {LEGACY_KEY_REF}: {e}"))
     })?;
     Ok(Connection {
         base_url: cfg.qdrant_url.clone(),
@@ -510,10 +517,32 @@ mod tests {
     }
 
     #[test]
+    fn missing_is_classified_on_the_phrase_for_both_host_error_variants() {
+        // The host renders NotFound as `secret not found: <key>` and Backend
+        // as `secrets backend error: <msg>`; the sentence is the same.
+        for wording in [REAL_NOT_CONNECTED, REAL_SERVE_PATH] {
+            for wrapped in [
+                format!("secret not found: {wording}"),
+                format!("secrets backend error: {wording}"),
+                wording.to_string(),
+            ] {
+                let host = StubHost::new(&[
+                    (infra::URI, Err(&wrapped)),
+                    (LEGACY_KEY_REF, Ok("legacy-key")),
+                ]);
+                let c = resolve_connection(&host, &cfg("https://old.qdrant.io:6333"))
+                    .unwrap_or_else(|e| panic!("{wrapped}: {e}"));
+                assert_eq!(c.source, Source::Legacy, "{wrapped}");
+            }
+        }
+    }
+
+    #[test]
     fn bridge_down_and_other_wordings_never_select_legacy() {
         for wording in [
             "bridge unavailable",
             "backend timeout",
+            "secrets backend error: backend timeout",
             "secret not found: secret://rag-qdrant/x",
         ] {
             let host = StubHost::new(&[
@@ -558,10 +587,9 @@ mod tests {
             )]),
         ];
         for host in cases {
-            if let Err(e) = resolve_connection(&host, &cfg("")) {
-                let shown = format!("{e} {e:?}");
-                assert!(!shown.contains("S3CRET"), "{shown}");
-            }
+            let e = resolve_connection(&host, &cfg("")).unwrap_err();
+            let shown = format!("{e} {e:?}");
+            assert!(!shown.contains("S3CRET"), "{shown}");
         }
         let host = with_infra(r#"{"collection_prefix":"acme__"}"#);
         let c = resolve_connection(&host, &cfg("")).unwrap();

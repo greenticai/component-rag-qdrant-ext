@@ -289,7 +289,7 @@ pub fn search<H: HostCalls>(
         .into_iter()
         .map(|h| serde_json::json!({ "id": h.id, "score": h.score, "payload": h.payload }))
         .collect();
-    Ok(serde_json::json!({ "hits": hits }))
+    Ok(serde_json::json!({ "hits": hits, "source": conn.source.label() }))
 }
 
 /// # Errors
@@ -347,7 +347,7 @@ pub fn upsert<H: HostCalls>(
     let req = upsert_request(&conn.base_url, &physical, &[point], &conn.api_key);
     let resp = qsend(host, &conn, &req)?;
     parse_ack(resp.status, &resp.body).map_err(|e| conn.attribute(e))?;
-    Ok(serde_json::json!({ "ok": true, "id": input.id }))
+    Ok(serde_json::json!({ "ok": true, "id": input.id, "source": conn.source.label() }))
 }
 
 /// Chunk, embed, then **delete the document's existing chunks before writing
@@ -432,6 +432,7 @@ pub fn ingest<H: HostCalls>(
         "ok": true,
         "doc_id": input.doc_id,
         "chunks": points.len(),
+        "source": conn.source.label(),
     }))
 }
 
@@ -461,7 +462,7 @@ pub fn delete<H: HostCalls>(
     let req = delete_request(&conn.base_url, &physical, &selector, &conn.api_key);
     let resp = qsend(host, &conn, &req)?;
     parse_ack(resp.status, &resp.body).map_err(|e| conn.attribute(e))?;
-    Ok(serde_json::json!({ "ok": true }))
+    Ok(serde_json::json!({ "ok": true, "source": conn.source.label() }))
 }
 
 /// # Errors
@@ -485,6 +486,7 @@ pub fn ensure_collection<H: HostCalls>(
         "collection": collection,
         "dimensions": dimensions,
         "distance": input.distance,
+        "source": conn.source.label(),
     }))
 }
 
@@ -628,6 +630,7 @@ pub fn list<H: HostCalls>(host: &H, cfg: &Config, input: &ListInput) -> Result<V
 
     let mut out = serde_json::Map::new();
     out.insert("documents".to_string(), Value::Array(documents));
+    out.insert("source".to_string(), Value::from(conn.source.label()));
     if let Some(next_page_offset) = page.next_page_offset {
         out.insert("next_page_offset".to_string(), next_page_offset);
     }

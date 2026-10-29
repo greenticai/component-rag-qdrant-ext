@@ -120,6 +120,25 @@ fn str_field(doc: &Value, field: &'static str) -> Result<String, InfraError> {
     }
 }
 
+/// `base_url` must be `http(s)://authority` only: no userinfo, path, query or
+/// fragment, because request URLs are built by appending `/collections/...`.
+fn validate_base_url(base_url: &str) -> Result<(), InfraError> {
+    let invalid = InfraError::Invalid { field: "base_url" };
+    let Some((scheme, rest)) = base_url.split_once("://") else {
+        return Err(invalid);
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return Err(invalid);
+    }
+    if rest.is_empty()
+        || rest.contains(['/', '?', '#', '@'])
+        || rest.chars().any(char::is_whitespace)
+    {
+        return Err(invalid);
+    }
+    Ok(())
+}
+
 impl InfraConnection {
     /// # Errors
     /// [`InfraError::Invalid`] / [`InfraError::UnsupportedVersion`]; the error
@@ -156,6 +175,7 @@ impl InfraConnection {
             .trim()
             .trim_end_matches('/')
             .to_string();
+        validate_base_url(&base_url)?;
         let credential = str_field(&doc, "credential")?;
         let port = doc
             .get("port")
@@ -250,6 +270,31 @@ mod tests {
         assert_eq!(c.base_url(), "https://q.example.com:6333");
         assert_eq!(c.credential(), "S3CRET");
         assert_eq!(c.extra("collection_prefix"), Some("acme__"));
+    }
+
+    #[test]
+    fn base_url_must_be_http_or_https_authority_only() {
+        for bad in [
+            "ftp://q.example.com:6333",
+            "q.example.com:6333",
+            "https://q.example.com:6333/x",
+            "https://q.example.com:6333/?y=1",
+            "https://q.example.com:6333?y=1",
+            "https://user:pw@q.example.com:6333",
+            "https://q.example.com:6333#f",
+            "https://",
+        ] {
+            let doc = golden_with(|v| v["base_url"] = bad.into());
+            assert_eq!(
+                InfraConnection::parse(&doc).unwrap_err(),
+                InfraError::Invalid { field: "base_url" },
+                "{bad}"
+            );
+        }
+        for good in ["http://q.example.com:6333", "https://q.example.com:6333/"] {
+            let doc = golden_with(|v| v["base_url"] = good.into());
+            assert!(InfraConnection::parse(&doc).is_ok(), "{good}");
+        }
     }
 
     #[test]

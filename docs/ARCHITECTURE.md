@@ -9,7 +9,7 @@ both this document and `README.md`, see
 [`docs/HOW-TO-MAKE-A-RAG-EXTENSION.md`](HOW-TO-MAKE-A-RAG-EXTENSION.md).
 
 All facts below were checked against the code at the commit this document was written
-against (`v0.5.0`, 136 tests passing). Where a claim could not be checked against
+against (`v0.5.0`, 201 tests passing). Where a claim could not be checked against
 something in this repository, that is said explicitly rather than assumed.
 
 ## The one rule, before anything else
@@ -29,7 +29,7 @@ bindings, and it is also the only place in the crate allowed to import `bindings
 Every other module — `ops.rs`, `qdrant.rs`, `embed.rs`, `chunk.rs`, `config.rs`,
 `input.rs`, `error.rs`, `tool_meta.rs` — takes `&impl HostCalls` generically, and tests
 substitute `greentic-extension-sdk-testing`'s `MockHttpClient` / `MockSecretsBackend`
-instead of a real transport. That is what makes 136 tests run in milliseconds on the
+instead of a real transport. That is what makes 201 tests run in milliseconds on the
 host instead of requiring a WASM runtime or a live Qdrant cluster.
 
 If you copy this layout for a new extension: a `bindings::` call in a pure module passes
@@ -166,7 +166,7 @@ admin console screen for this extension is wired up today. `embedding` and `chun
 deliberately absent from it: both are nested objects, and the renderer that consumes
 this schema falls through to raw JSON for anything it cannot turn into flat form
 fields, so declaring them would promise a control the renderer cannot produce. Only
-`collection` is marked `required` (since `0.6.0` `qdrant_url` is the legacy source,
+`collection` is marked `required` (`qdrant_url` is the legacy source,
 used only while no `vector-store/qdrant` resource is connected, so a form must not
 demand it), because `config.rs::resolve` gives every other field a working default. Kept honest by
 `tool_meta::tests::describe_json_config_schema_parses_and_names_the_required_fields`,
