@@ -16,6 +16,7 @@ pub mod config;
 pub mod embed;
 pub mod error;
 pub mod host;
+pub mod infra;
 pub mod input;
 pub mod ops;
 pub mod qdrant;
