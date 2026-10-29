@@ -540,7 +540,7 @@ for `secret://infra/vector_store_qdrant` (parsed by `infra::InfraConnection`), a
 when the host says the resource is not connected does it fall back to the legacy overlay
 `qdrant_url` + `secret://rag-qdrant/qdrant_api_key`. Tenant isolation inside a shared
 instance is the resource's `extras.collection_prefix`, applied once by
-`connection::physical_collection`; tool outputs echo the logical name. The resource's
+`connection::physical_collection`; tool outputs echo the logical name. Contract with the admin: a `collection_prefix` MUST end with `__`, and logical names may not contain `__`, so prefix + name decodes uniquely. The resource's
 `port` is Qdrant's REST port. The network allow-list is static and does not yet cover
 hosts outside `*.qdrant.io`.
 

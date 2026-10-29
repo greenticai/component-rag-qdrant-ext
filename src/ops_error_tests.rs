@@ -173,3 +173,33 @@ fn every_error_in_the_connection_path_names_the_kind() {
         assert!(matches!(err, RagError::InvalidInput(_)), "{err:?}");
     }
 }
+
+#[test]
+fn a_malformed_2xx_body_is_scrubbed_like_a_failure_body() {
+    let host = infra_host("acme__", 1);
+    host.http.expect(
+        "POST",
+        &format!("{INFRA_BASE}/collections/acme__kb/points/query"),
+        status(200, "garbage S3CRET"),
+    );
+    let msg = ops::search(&host, &cfg_no_legacy(), &search_args())
+        .unwrap_err()
+        .to_string();
+    assert!(!msg.contains(INFRA_CREDENTIAL), "{msg}");
+    // The scrub is applied to the response itself, whatever the parser quotes.
+    let probe = TestHost {
+        http: MockHttpClient::new(),
+        secrets: MockSecretsBackend::new(),
+    };
+    probe
+        .http
+        .expect("GET", "https://h/x", status(200, "a S3CRET b"));
+    let req = HttpRequest {
+        method: "GET".into(),
+        url: "https://h/x".into(),
+        headers: vec![],
+        body: None,
+    };
+    let resp = ops::send(&probe, &req, "t", &[INFRA_CREDENTIAL]).unwrap();
+    assert_eq!(String::from_utf8(resp.body).unwrap(), "a <redacted> b");
+}

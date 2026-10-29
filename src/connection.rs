@@ -120,23 +120,25 @@ fn name_char_ok(c: char) -> bool {
 }
 
 /// The single place a prefix is applied. The logical name must be
-/// `[A-Za-z0-9._-]{1,128}` without a leading `__`; the prefix follows the same
-/// character rule and is at most 64 characters. A logical name that already
-/// starts with the prefix is just a name (it is NOT de-duplicated).
+/// `[A-Za-z0-9._-]{1,128}` and must not contain `__` anywhere; the prefix follows
+/// the same character rule, is at most 64 characters and MUST end with `__`.
+/// Together these make `prefix + logical` uniquely decodable: because a logical
+/// name never contains `__`, the first `__`-terminated segment boundary is the
+/// prefix's end, so `a`+`b__kb` can never equal `ab__`+`kb`.
 ///
 /// # Errors
 /// [`RagError::InvalidInput`].
 pub fn physical_collection(prefix: Option<&str>, logical: &str) -> Result<String, RagError> {
     if logical.is_empty()
         || logical.len() > MAX_NAME_LEN
-        || logical.starts_with("__")
+        || logical.contains("__")
         || !logical.chars().all(name_char_ok)
         || logical == "."
         || logical == ".."
     {
         return Err(RagError::InvalidInput(
             "collection name must be 1-128 characters of letters, digits, `.`, `_` or `-`, \
-             and must not start with `__`"
+             and must not contain `__` (reserved as the namespace separator)"
                 .into(),
         ));
     }
@@ -150,10 +152,14 @@ pub fn physical_collection(prefix: Option<&str>, logical: &str) -> Result<String
 }
 
 fn validate_prefix(prefix: &str) -> Result<(), RagError> {
-    if prefix.is_empty() || prefix.len() > MAX_PREFIX_LEN || !prefix.chars().all(name_char_ok) {
+    if prefix.is_empty()
+        || prefix.len() > MAX_PREFIX_LEN
+        || !prefix.chars().all(name_char_ok)
+        || !prefix.ends_with("__")
+    {
         return Err(RagError::InvalidInput(format!(
             "the {} resource's `{PREFIX_KEY}` must be 1-{MAX_PREFIX_LEN} characters of letters, \
-             digits, `.`, `_` or `-`",
+             digits, `.`, `_` or `-`, and must end with `__`",
             infra::KIND
         )));
     }
@@ -232,7 +238,13 @@ fn legacy<H: HostCalls>(host: &H, cfg: &Config) -> Result<Connection, RagError> 
         return Err(infra_error(InfraError::Missing));
     }
     let api_key = host.secret(LEGACY_KEY_REF).map_err(|e| {
-        RagError::PermissionDenied(format!("host could not resolve {LEGACY_KEY_REF}: {e}"))
+        // No secret value is known on this path (the infra resource is not
+        // connected, the legacy key failed to load), but the host text goes
+        // through the same scrubber as every other wrapped message.
+        RagError::PermissionDenied(format!(
+            "host could not resolve {LEGACY_KEY_REF}: {}",
+            redact_all(&e, &[])
+        ))
     })?;
     Ok(Connection {
         base_url: cfg.qdrant_url.clone(),
@@ -250,7 +262,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::collections::HashMap;
 
-    const NOT_CONNECTED: &str = "resource vector-store/qdrant is not connected to this deployment";
+    use crate::testkit::{NOT_CONNECTED, REAL_NOT_CONNECTED, REAL_NOT_FOUND, REAL_SERVE_PATH};
 
     struct StubHost {
         secrets: HashMap<String, Result<String, String>>,
@@ -312,7 +324,7 @@ mod tests {
 
     fn doc(extras: &str) -> String {
         format!(
-            r#"{{"v":1,"kind":"vector-store/qdrant","host":"q.example.com","port":6333,
+            r#"{{"v":1,"kind":"vector_store_qdrant","host":"q.example.com","port":6333,
             "scheme":"https","base_url":"https://q.example.com:6333","credential":"S3CRET",
             "extras":{extras}}}"#
         )
@@ -429,22 +441,88 @@ mod tests {
 
     #[test]
     fn physical_collection_refuses_names_that_could_escape_the_namespace() {
-        for bad in ["", "a/b", "../x", "..", "__x", &"a".repeat(129)] {
+        for bad in [
+            "",
+            "a/b",
+            "../x",
+            "..",
+            "__x",
+            "a__b",
+            "b__kb",
+            &"a".repeat(129),
+        ] {
             assert!(physical_collection(Some("acme__"), bad).is_err(), "{bad:?}");
             assert!(physical_collection(None, bad).is_err(), "{bad:?}");
         }
-        // Not de-duplicated: that would be a cross-tenant hole.
-        assert_eq!(
-            physical_collection(Some("acme__"), "acme__kb").unwrap(),
-            "acme__acme__kb"
-        );
+        // A name that carries the separator is refused (never de-duplicated).
+        assert!(physical_collection(Some("acme__"), "acme__kb").is_err());
     }
 
     #[test]
     fn prefix_rules() {
         assert!(physical_collection(Some(&"p".repeat(65)), "kb").is_err());
         assert!(physical_collection(Some("a/b"), "kb").is_err());
+        // Must end with the separator.
+        let err = physical_collection(Some("acme"), "kb")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("collection_prefix") && err.contains("end with `__`"),
+            "{err}"
+        );
         assert!(physical_collection(Some(""), "kb").is_err());
+    }
+
+    #[test]
+    fn two_different_tenants_can_never_address_one_physical_name() {
+        // `a`+`b__kb` == `ab__`+`kb` was the collision; now one side is refused.
+        assert!(physical_collection(Some("a"), "b__kb").is_err());
+        assert!(physical_collection(Some("ab__"), "kb").is_ok());
+        // Among accepted pairs the decomposition is unique.
+        let x = physical_collection(Some("a__"), "b-kb").unwrap();
+        let y = physical_collection(Some("a__b-"), "kb");
+        assert!(y.is_err(), "prefix must end with `__`");
+        assert_eq!(x, "a__b-kb");
+    }
+
+    #[test]
+    fn a_resource_prefix_not_ending_in_the_separator_fails_closed() {
+        let host = with_infra(r#"{"collection_prefix":"acme"}"#);
+        let err = resolve_connection(&host, &cfg("")).unwrap_err().to_string();
+        assert!(
+            err.contains("collection_prefix") && err.contains("end with `__`"),
+            "{err}"
+        );
+        assert!(err.contains("vector-store/qdrant"), "{err}");
+    }
+
+    #[test]
+    fn each_real_missing_wording_selects_the_legacy_source() {
+        for wording in [REAL_NOT_CONNECTED, REAL_NOT_FOUND, REAL_SERVE_PATH] {
+            let host = StubHost::new(&[
+                (infra::URI, Err(wording)),
+                (LEGACY_KEY_REF, Ok("legacy-key")),
+            ]);
+            let c = resolve_connection(&host, &cfg("https://old.qdrant.io:6333"))
+                .unwrap_or_else(|e| panic!("{wording}: {e}"));
+            assert_eq!(c.source, Source::Legacy, "{wording}");
+        }
+    }
+
+    #[test]
+    fn bridge_down_and_other_wordings_never_select_legacy() {
+        for wording in [
+            "bridge unavailable",
+            "backend timeout",
+            "secret not found: secret://rag-qdrant/x",
+        ] {
+            let host = StubHost::new(&[
+                (infra::URI, Err(wording)),
+                (LEGACY_KEY_REF, Ok("legacy-key")),
+            ]);
+            assert!(resolve_connection(&host, &cfg("https://old.qdrant.io:6333")).is_err());
+            assert!(!host.asked(LEGACY_KEY_REF), "{wording}");
+        }
     }
 
     #[test]

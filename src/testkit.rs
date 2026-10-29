@@ -11,7 +11,15 @@ use crate::host::{HostCalls, HttpRequest, HttpResponse};
 pub const INFRA_BASE: &str = "https://q.example.com:6333";
 pub const INFRA_CREDENTIAL: &str = "S3CRET";
 pub const EMBED_URL: &str = "https://api.openai.com/v1/embeddings";
-pub const NOT_CONNECTED: &str = "resource vector-store/qdrant is not connected to this deployment";
+/// The runner's real "not connected" wordings (greentic-aw-runtime
+/// `infra_connection.rs`; designer in-process `SecretsError::NotFound`;
+/// greentic-runner-host `agent_node.rs` out-of-process serve path).
+pub const REAL_NOT_CONNECTED: &str = "infra resource 'vector_store_qdrant' is not connected to this deployment (looked at secret://infra/vector_store_qdrant); add it in workspace settings and deploy again";
+pub const REAL_NOT_FOUND: &str = "secret not found: secret://infra/vector_store_qdrant";
+pub const REAL_SERVE_PATH: &str = "infra resource request 'secret://infra/vector_store_qdrant' is not available on the out-of-process serve path (it resolves one credential for every tenant); deploy the worker as a unit";
+/// What `TestHost` answers for an infra URI nobody set (the deployed-worker
+/// wording; the other two are exercised one by one in `connection` tests).
+pub const NOT_CONNECTED: &str = REAL_NOT_CONNECTED;
 
 /// Adapts the SDK's mocks to the extension's `HostCalls` trait.
 pub struct TestHost {
@@ -85,7 +93,7 @@ pub fn embed_ok(n: usize) -> CannedResponse {
 
 pub fn infra_doc(credential: &str, extras: &str) -> String {
     format!(
-        r#"{{"v":1,"kind":"vector-store/qdrant","host":"q.example.com","port":6333,
+        r#"{{"v":1,"kind":"vector_store_qdrant","host":"q.example.com","port":6333,
         "scheme":"https","base_url":"{INFRA_BASE}","credential":"{credential}",
         "extras":{extras}}}"#
     )

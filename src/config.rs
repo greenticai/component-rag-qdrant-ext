@@ -191,9 +191,11 @@ pub struct ConfigOverlay {
 /// reader has no way to act on, and pointed at an entry point no host calls.
 pub(crate) fn not_configured(field: &str) -> RagError {
     RagError::InvalidInput(format!(
-        "config: no `{field}` is configured for this tenant. Set `qdrant_url` and \
-         `collection` in this extension's configuration — either as the operator \
-         baseline or as this tenant's override — then retry."
+        "config: no `{field}` is configured for this tenant. Connect a \
+         vector-store/qdrant resource in workspace settings (Resources) to say where \
+         Qdrant is, and set `collection` in this extension's configuration — either \
+         as the operator baseline or as this tenant's override — then retry. (Without \
+         a connected resource, the legacy `qdrant_url` setting is used instead.)"
     ))
 }
 
@@ -748,6 +750,20 @@ mod tests {
         // compares equal, not the same one reused.
         assert!(store.store(full_cfg()).is_ok());
         assert_eq!(store.installed().unwrap().collection, "kb");
+    }
+
+    #[test]
+    fn the_not_configured_message_names_the_resource_first_and_the_legacy_url_second() {
+        let RagError::InvalidInput(msg) = not_configured("collection") else {
+            panic!("expected InvalidInput");
+        };
+        let resource = msg.find("vector-store/qdrant").expect("names the resource");
+        let legacy = msg
+            .find("legacy `qdrant_url`")
+            .expect("names the legacy url");
+        assert!(resource < legacy, "{msg}");
+        assert!(msg.contains("`collection`") && msg.contains("operator") && msg.contains("tenant"));
+        assert!(!msg.contains("lifecycle::init"));
     }
 
     #[test]

@@ -128,6 +128,13 @@ instance cannot be enumerated. The tenant-pinned overlay `collection` rule is
 unchanged and composes with the prefix: the overlay picks the logical name, the
 prefix is applied after.
 
+**`collection_prefix` must end with `__`.** Logical collection names may not
+contain `__`, and a prefix must end with it, so `prefix + name` can be decoded
+uniquely (without this, prefix `a` + name `b__kb` would collide with prefix `ab__`
++ name `kb`). A resource whose prefix does not end with `__` fails closed with an
+error naming `collection_prefix`. This binds the admin: every `collection_prefix`
+it generates or accepts for a `vector-store/qdrant` resource MUST end with `__`.
+
 **Port.** The resource's `port` must be Qdrant's **REST port** (6333 by default).
 This extension speaks REST only; a gRPC port (6334) shows up as a connection
 error naming `host:port`.

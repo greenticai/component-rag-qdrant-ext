@@ -21,11 +21,30 @@ pub const KIND: &str = "vector-store/qdrant";
 /// The canonical guest URI of the kind. Must be declared verbatim in
 /// `runtime.permissions.secrets`.
 pub const URI: &str = "secret://infra/vector_store_qdrant";
+/// The kind as the runner writes it into the guest document: the canonical
+/// (secret-name) form of [`KIND`]. The URI already selects the kind, so this is
+/// a consistency check, not a selector. Source of truth: the runner's
+/// `to_guest_document` and its `infra_connection_v1.json` fixture.
+pub const DOCUMENT_KIND: &str = "vector_store_qdrant";
 /// Highest document version this reader understands.
 pub const SUPPORTED_VERSION: u32 = 1;
 
 /// The host's wording when the resource is not connected to the deployment.
+/// The wordings that mean "this resource is simply not connected here", taken
+/// from the runner source.
+///
+/// - `greentic-aw-runtime` `infra_connection.rs` (deployed workers):
+///   "infra resource '<kind>' is not connected to this deployment (...)".
+/// - Designer in-process hosts: `SecretsError::NotFound` displayed as
+///   "secret not found: secret://infra/...".
+/// - `greentic-runner-host` `agent_node.rs`, out-of-process serve path: "infra
+///   resource request '<uri>' is not available on the out-of-process serve path".
+///
+/// Anything else (bridge down, permission, backend) is NOT missing and fails
+/// closed.
 const NOT_CONNECTED_PHRASE: &str = "is not connected to this deployment";
+const NOT_FOUND_PHRASE: &str = "secret not found: secret://infra/";
+const SERVE_PATH_PHRASE: &str = "not available on the out-of-process serve path";
 
 pub struct InfraConnection {
     base_url: String,
@@ -126,7 +145,7 @@ impl InfraConnection {
         }
 
         if let Some(kind) = doc.get("kind")
-            && kind.as_str() != Some(KIND)
+            && kind.as_str() != Some(DOCUMENT_KIND)
         {
             return Err(InfraError::Invalid { field: "kind" });
         }
@@ -201,7 +220,10 @@ impl InfraConnection {
 /// is an unreadable resource, which must never fall back to another source.
 #[must_use]
 pub fn classify_host_error(msg: &str) -> InfraError {
-    if msg.contains(NOT_CONNECTED_PHRASE) {
+    if [NOT_CONNECTED_PHRASE, NOT_FOUND_PHRASE, SERVE_PATH_PHRASE]
+        .iter()
+        .any(|p| msg.contains(p))
+    {
         InfraError::Missing
     } else {
         InfraError::Unreadable
@@ -212,7 +234,15 @@ pub fn classify_host_error(msg: &str) -> InfraError {
 mod tests {
     use super::*;
 
+    /// Copied verbatim from the runner (greentic-aw-runtime
+    /// `tests/fixtures/infra_connection_v1.json`); re-sync when it changes.
     const GOLDEN: &str = include_str!("../tests/fixtures/infra_connection_v1.json");
+
+    fn golden_with(f: impl FnOnce(&mut Value)) -> String {
+        let mut v: Value = serde_json::from_str(GOLDEN).unwrap();
+        f(&mut v);
+        v.to_string()
+    }
 
     #[test]
     fn parses_the_golden_guest_document() {
@@ -223,10 +253,20 @@ mod tests {
     }
 
     #[test]
+    fn the_runners_fixture_kind_is_the_canonical_name() {
+        // The runner sends the canonical secret name, not `vector-store/qdrant`.
+        let v: Value = serde_json::from_str(GOLDEN).unwrap();
+        assert_eq!(v["kind"], DOCUMENT_KIND);
+        assert!(InfraConnection::parse(GOLDEN).is_ok());
+    }
+
+    #[test]
     fn an_absent_version_is_read_as_one_and_a_higher_one_is_refused() {
-        let no_v = GOLDEN.replace("\"v\":1,", "");
+        let no_v = golden_with(|v| {
+            v.as_object_mut().unwrap().remove("v");
+        });
         assert!(InfraConnection::parse(&no_v).is_ok());
-        let v2 = GOLDEN.replace("\"v\":1", "\"v\":2");
+        let v2 = golden_with(|v| v["v"] = 2.into());
         assert_eq!(
             InfraConnection::parse(&v2).unwrap_err(),
             InfraError::UnsupportedVersion { found: 2 }
@@ -235,17 +275,20 @@ mod tests {
 
     #[test]
     fn base_url_is_taken_from_the_host_document_not_rebuilt() {
-        let doc = r#"{"v":1,"kind":"vector-store/qdrant","host":"::1","port":6333,
-            "scheme":"http","base_url":"http://[::1]:6333","credential":"k","extras":{}}"#;
+        let doc = golden_with(|v| {
+            v["host"] = "::1".into();
+            v["scheme"] = "http".into();
+            v["base_url"] = "http://[::1]:6333".into();
+        });
         assert_eq!(
-            InfraConnection::parse(doc).unwrap().base_url(),
+            InfraConnection::parse(&doc).unwrap().base_url(),
             "http://[::1]:6333"
         );
     }
 
     #[test]
     fn a_trailing_slash_on_base_url_is_trimmed() {
-        let doc = GOLDEN.replace("6333\",", "6333/\",");
+        let doc = golden_with(|v| v["base_url"] = "https://q.example.com:6333/".into());
         assert_eq!(
             InfraConnection::parse(&doc).unwrap().base_url(),
             "https://q.example.com:6333"
@@ -255,21 +298,25 @@ mod tests {
     #[test]
     fn invalid_documents_name_the_field_and_never_echo_a_value() {
         let cases: Vec<(String, &str)> = vec![
+            (golden_with(|v| v["port"] = "S3CRET-PORT".into()), "port"),
+            (golden_with(|v| v["port"] = 0.into()), "port"),
+            (golden_with(|v| v["credential"] = "".into()), "credential"),
             (
-                GOLDEN.replace("\"port\":6333", "\"port\":\"S3CRET-PORT\""),
-                "port",
-            ),
-            (GOLDEN.replace("\"port\":6333", "\"port\":0"), "port"),
-            (GOLDEN.replace("\"S3CRET\"", "\"\""), "credential"),
-            (
-                GOLDEN.replace("\"base_url\":\"https://q.example.com:6333\",", ""),
+                golden_with(|v| {
+                    v.as_object_mut().unwrap().remove("base_url");
+                }),
                 "base_url",
             ),
-            (GOLDEN.replace("\"acme__\"", "{\"S3CRET\":1}"), "extras"),
+            (
+                golden_with(|v| v["extras"] = serde_json::json!({"S3CRET": 1})),
+                "extras",
+            ),
             ("not json S3CRET".to_string(), "document"),
             ("[\"S3CRET\"]".to_string(), "document"),
+            (golden_with(|v| v["kind"] = "other_kind".into()), "kind"),
+            // The display form of the kind is not what the runner sends.
             (
-                GOLDEN.replace("vector-store/qdrant\",\"host", "other/kind\",\"host"),
+                golden_with(|v| v["kind"] = "vector-store/qdrant".into()),
                 "kind",
             ),
         ];
@@ -290,7 +337,7 @@ mod tests {
 
     #[test]
     fn require_extra_treats_blank_as_absent() {
-        let doc = GOLDEN.replace("\"acme__\"", "\"  \"");
+        let doc = golden_with(|v| v["extras"]["collection_prefix"] = "  ".into());
         let c = InfraConnection::parse(&doc).unwrap();
         assert_eq!(
             c.require_extra("collection_prefix").unwrap_err(),
@@ -306,16 +353,33 @@ mod tests {
         );
     }
 
+    use crate::testkit::{REAL_NOT_CONNECTED, REAL_NOT_FOUND, REAL_SERVE_PATH};
+
     #[test]
-    fn classify_host_error_maps_the_not_connected_phrase_to_missing_and_the_rest_to_unreadable() {
-        assert_eq!(
-            classify_host_error("resource vector-store/qdrant is not connected to this deployment"),
-            InfraError::Missing
-        );
-        assert_eq!(
-            classify_host_error("backend timeout"),
-            InfraError::Unreadable
-        );
+    fn the_deployed_worker_wording_is_missing() {
+        assert_eq!(classify_host_error(REAL_NOT_CONNECTED), InfraError::Missing);
+    }
+
+    #[test]
+    fn the_designer_in_process_wording_is_missing() {
+        assert_eq!(classify_host_error(REAL_NOT_FOUND), InfraError::Missing);
+    }
+
+    #[test]
+    fn the_out_of_process_serve_path_wording_is_missing() {
+        assert_eq!(classify_host_error(REAL_SERVE_PATH), InfraError::Missing);
+    }
+
+    #[test]
+    fn everything_else_fails_closed_as_unreadable() {
+        for msg in [
+            "backend timeout",
+            "bridge unavailable",
+            "secret not found: secret://rag-qdrant/qdrant_api_key",
+            "permission denied",
+        ] {
+            assert_eq!(classify_host_error(msg), InfraError::Unreadable, "{msg}");
+        }
     }
 
     #[test]

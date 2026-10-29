@@ -18,6 +18,7 @@ fn readme_does_not_claim_the_old_required_secret() {
         "REST port",
         "flow node",
         "secret://infra/vector_store_qdrant",
+        "must end with `__`",
     ] {
         assert!(README.contains(needle), "README.md must mention {needle:?}");
     }

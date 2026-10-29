@@ -26,10 +26,10 @@ pub use crate::connection::LEGACY_KEY_REF as QDRANT_KEY_REF;
 pub const EMBEDDING_KEY_REF: &str = "secret://rag-qdrant/embedding_api_key";
 
 /// Issue one request. Every secret in `scrub` is removed from a transport
-/// error and from a non-2xx body before either can reach an error message
+/// error and from the response body (any status) before either can reach an error message
 /// (a failing request URL or an upstream error page may echo a key). `target`
 /// names what was being called and never contains a credential.
-fn send<H: HostCalls>(
+pub(crate) fn send<H: HostCalls>(
     host: &H,
     req: &HttpRequest,
     target: &str,
@@ -41,11 +41,10 @@ fn send<H: HostCalls>(
             redact_all(&e, scrub)
         ))
     })?;
-    if !(200..300).contains(&resp.status) {
-        let text = String::from_utf8_lossy(&resp.body);
-        if scrub.iter().any(|s| !s.is_empty() && text.contains(s)) {
-            resp.body = redact_all(&text, scrub).into_bytes();
-        }
+    // Every status: a malformed 2xx body ends up quoted in a parse error too.
+    let text = String::from_utf8_lossy(&resp.body);
+    if scrub.iter().any(|s| !s.is_empty() && text.contains(s)) {
+        resp.body = redact_all(&text, scrub).into_bytes();
     }
     Ok(resp)
 }
@@ -112,17 +111,17 @@ fn collection_of<'a>(
 ) -> Result<&'a str, RagError> {
     let pinned = overlay.and_then(|o| o.collection.as_deref());
 
-    // Every request builder below reads `cfg.qdrant_url`, so this tenant's
-    // collection must only ever be addressed on the cluster this call's own
-    // overlay named. `config::resolve` guarantees that: when the overlay
-    // carries a url, the resolved `cfg.qdrant_url` *is* it (or resolution
-    // already refused, because `lifecycle::init` had pinned a different one).
+    // Legacy source only: the requests go to `Connection::base_url`, which for
+    // the legacy source is `cfg.qdrant_url` (a connected infra resource
+    // supplies its own base URL and ignores this field). So when the overlay
+    // carries a `qdrant_url`, the `cfg` this call was resolved with must be
+    // the one built from THAT overlay. `config::resolve` guarantees it (or has
+    // already refused, because `lifecycle::init` pinned a different url).
     //
-    // Keeping the comparison here anyway costs one string compare and closes
-    // the gap that would open the moment someone hands this function a `cfg`
-    // resolved from a *different* call's overlay: a mismatch would mean
-    // reading one tenant's collection name off another tenant's cluster,
-    // which is exactly the cross-tenant read this ordering exists to prevent.
+    // The comparison stays anyway: one string compare closes the gap that
+    // would open if someone handed this function a `cfg` resolved from a
+    // *different* call's overlay, which would read one tenant's collection
+    // name off another tenant's cluster.
     if let Some(url) = overlay.and_then(|o| o.qdrant_url.as_deref())
         && url.trim().trim_end_matches('/') != cfg.qdrant_url
     {

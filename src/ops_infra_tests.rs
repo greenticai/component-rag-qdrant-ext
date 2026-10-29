@@ -82,7 +82,15 @@ fn the_overlay_pinned_collection_still_wins_and_is_then_prefixed() {
         r#"{"vector":[0.1,0.2,0.3],"collection":"x","_tenant_overlay":{"collection":"team-a"}}"#,
     )
     .unwrap();
-    assert!(ops::search(&host, &cfg, &refused).is_err());
+    let msg = ops::search(&host, &cfg, &refused).unwrap_err().to_string();
+    assert!(
+        msg.contains("\"x\"") && msg.contains("team-a") && msg.contains("cannot be overridden"),
+        "{msg}"
+    );
+    assert!(
+        host.http.calls().is_empty(),
+        "a refused call must not fetch"
+    );
 
     let host = crate::testkit::infra_host("acme__", 1);
     crate::testkit::expect_qdrant(&host.http, crate::testkit::INFRA_BASE, "acme__team-a");
@@ -153,8 +161,8 @@ fn legacy_source_keeps_unprefixed_names() {
 #[test]
 fn ids_are_independent_of_the_prefix() {
     use crate::qdrant::chunk_point_id;
-    // Isolation is the collection, not the id namespace.
-    assert_eq!(chunk_point_id("doc-1", 0), chunk_point_id("doc-1", 0));
+    // Isolation is the collection, not the id namespace: the ids that go on the
+    // wire are the plain document-derived ones, whatever the prefix is.
     let body_of = |prefix: &str| {
         let host = infra_host(prefix, 1);
         ops::ingest(
@@ -173,4 +181,8 @@ fn ids_are_independent_of_the_prefix() {
         v["points"][0]["id"].clone()
     };
     assert_eq!(body_of("a__"), body_of("b__"));
+    assert_eq!(
+        body_of("a__"),
+        serde_json::json!(chunk_point_id("doc-1", 0))
+    );
 }
