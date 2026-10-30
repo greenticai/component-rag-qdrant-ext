@@ -7,7 +7,7 @@ flow nodes and the agentic worker — backed by a Qdrant vector collection:
 API; callers that already hold a vector can pass it directly instead.
 
 - id: `greentic.rag-qdrant`
-- version: `0.5.0`
+- version: `0.6.0`
 - contract: `greentic:extension-design@0.3.0`
 - published: `greentic.rag-qdrant@0.3.0` on the Greentic store
 
