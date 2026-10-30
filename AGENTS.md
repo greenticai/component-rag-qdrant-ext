@@ -9,7 +9,7 @@ repository. This is a Greentic Designer **design** extension scaffolded by
 
 ## What this is
 
-- **id:** `greentic.rag-qdrant`  ·  **version:** `0.5.0`  ·  **kind:** `design`
+- **id:** `greentic.rag-qdrant`  ·  **version:** `0.6.0`  ·  **kind:** `design`
 - A WebAssembly component (target `wasm32-wasip2`) that the Greentic runtime loads
   as a signed `.gtxpack`.
 - Exposes six tools to both flow nodes and the agentic worker, backed by a Qdrant
