@@ -52,6 +52,7 @@
     "permissions": {
       "network": [
         "https://*.qdrant.io/*",
+        "https://*.qdrant.io:6333/*",
         "https://api.openai.com/*"
       ],
       "secrets": [
