@@ -1000,4 +1000,28 @@ mod tests {
             serde_json::to_string_pretty(&serde_json::json!({ "tools": entries })).unwrap()
         );
     }
+    /// The host matches a pattern's port exactly and a pattern without one
+    /// means 443, so `https://*.qdrant.io/*` alone refuses Qdrant Cloud's
+    /// REST port. Both entries are needed, and none may be a catch-all.
+    #[test]
+    fn network_allowlist_covers_the_rest_port_and_has_no_catch_all() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../describe.json")).expect("valid describe.json");
+        let network: Vec<&str> = manifest["runtime"]["permissions"]["network"]
+            .as_array()
+            .expect("runtime.permissions.network")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(
+            network.contains(&"https://*.qdrant.io:6333/*"),
+            "{network:?}"
+        );
+        for banned in ["*", "https://*", "https://*/*", "http://*"] {
+            assert!(
+                !network.contains(&banned),
+                "catch-all {banned} in {network:?}"
+            );
+        }
+    }
 }
