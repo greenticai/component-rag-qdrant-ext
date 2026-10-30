@@ -11,6 +11,9 @@ answer "what documents are stored here?" — listing documents grouped by
 `doc_id`, each with its chunk count and the metadata supplied at ingest,
 paginated rather than truncated.
 
+Collection names you pass or read are *logical* names; the extension adds the
+workspace's prefix itself, so never include one.
+
 Call `rag_search` before answering questions that depend on stored
 documents, and ground the answer in the returned passages rather than prior
 knowledge.

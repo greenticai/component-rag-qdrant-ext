@@ -13,13 +13,26 @@ pub mod bindings;
 
 pub mod chunk;
 pub mod config;
+pub mod connection;
 pub mod embed;
 pub mod error;
 pub mod host;
+pub mod infra;
 pub mod input;
 pub mod ops;
 pub mod qdrant;
 pub mod tool_meta;
+
+#[cfg(test)]
+mod docs_tests;
+#[cfg(test)]
+mod ops_conformance_tests;
+#[cfg(test)]
+mod ops_error_tests;
+#[cfg(test)]
+mod ops_infra_tests;
+#[cfg(test)]
+mod testkit;
 
 use bindings::exports::greentic::extension_base::{lifecycle, manifest};
 use bindings::exports::greentic::extension_design::{knowledge, prompting, tools, validation};

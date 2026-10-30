@@ -191,9 +191,11 @@ pub struct ConfigOverlay {
 /// reader has no way to act on, and pointed at an entry point no host calls.
 pub(crate) fn not_configured(field: &str) -> RagError {
     RagError::InvalidInput(format!(
-        "config: no `{field}` is configured for this tenant. Set `qdrant_url` and \
-         `collection` in this extension's configuration — either as the operator \
-         baseline or as this tenant's override — then retry."
+        "config: no `{field}` is configured for this tenant. Connect a \
+         vector-store/qdrant resource in workspace settings (Resources) to say where \
+         Qdrant is, and set `collection` in this extension's configuration — either \
+         as the operator baseline or as this tenant's override — then retry. (Without \
+         a connected resource, the legacy `qdrant_url` setting is used instead.)"
     ))
 }
 
@@ -235,8 +237,7 @@ fn trim_slashes(url: &str) -> String {
 /// `ops::collection_of`'s decision, because that also depends on the arguments.
 ///
 /// # Errors
-/// [`RagError::InvalidInput`] when no `qdrant_url` is configured on either
-/// channel, when the overlay's `qdrant_url` is blank or contradicts an
+/// [`RagError::InvalidInput`] when the overlay's `qdrant_url` is blank or contradicts an
 /// `init`-pinned one, or when a merged value is out of range (zero
 /// dimensions, zero chunk window, overlap at or above the window).
 pub fn resolve(base: Option<&Config>, overlay: Option<&ConfigOverlay>) -> Result<Config, RagError> {
@@ -336,7 +337,10 @@ fn resolve_qdrant_url(
         }
         (Some(overlay_url), _) => Ok(overlay_url),
         (None, Some(init_url)) => Ok(init_url.to_string()),
-        (None, None) => Err(not_configured("qdrant_url")),
+        // Not an error here any more: the connection may come from the
+        // `vector-store/qdrant` infrastructure resource. `connection::resolve_connection`
+        // refuses, by name, when neither source exists.
+        (None, None) => Ok(String::new()),
     }
 }
 
@@ -485,13 +489,13 @@ mod tests {
         assert_eq!(cfg.chunk.overlap_chars, 150);
     }
 
+    /// `qdrant_url` is the legacy source: it may be absent because the
+    /// connection can come from the `vector-store/qdrant` resource. The refusal
+    /// when neither exists lives in `connection::resolve_connection`.
     #[test]
-    fn a_missing_required_field_names_the_field() {
-        let err = parse_config(r#"{"collection":"kb"}"#).unwrap_err();
-        let RagError::InvalidInput(msg) = err else {
-            panic!("expected InvalidInput");
-        };
-        assert!(msg.contains("qdrant_url"), "message was: {msg}");
+    fn a_missing_qdrant_url_resolves_to_blank_instead_of_failing() {
+        let cfg = parse_config(r#"{"collection":"kb"}"#).unwrap();
+        assert_eq!(cfg.qdrant_url, "");
     }
 
     #[test]
@@ -632,40 +636,17 @@ mod tests {
     // ---- resolution: nothing configured ---------------------------------
 
     #[test]
-    fn no_baseline_and_no_overlay_is_an_error_naming_what_to_do_about_it() {
-        let err = resolve(None, None).unwrap_err();
-        let RagError::InvalidInput(msg) = err else {
-            panic!("expected InvalidInput");
-        };
-        assert!(msg.contains("qdrant_url"), "message was: {msg}");
-        assert!(msg.contains("collection"), "message was: {msg}");
-        assert!(
-            msg.contains("operator") && msg.contains("baseline"),
-            "message was: {msg}"
-        );
-        assert!(
-            msg.contains("tenant") && msg.contains("override"),
-            "message was: {msg}"
-        );
-        // The old message pointed the operator at a guest-internal entry
-        // point no host calls. It must not come back.
-        assert!(!msg.contains("lifecycle::init"), "message was: {msg}");
+    fn no_baseline_and_no_overlay_leaves_the_legacy_url_blank() {
+        let cfg = resolve(None, None).unwrap();
+        assert_eq!(cfg.qdrant_url, "");
+        assert_eq!(cfg.collection, "");
     }
 
     #[test]
-    fn an_overlay_with_no_qdrant_url_and_no_baseline_is_the_same_error() {
-        let err = resolve(None, Some(&overlay(r#"{"collection":"tenant-a"}"#))).unwrap_err();
-        let RagError::InvalidInput(msg) = err else {
-            panic!("expected InvalidInput");
-        };
-        assert!(
-            msg.contains("operator") && msg.contains("baseline"),
-            "message was: {msg}"
-        );
-        assert!(
-            msg.contains("tenant") && msg.contains("override"),
-            "message was: {msg}"
-        );
+    fn an_overlay_with_no_qdrant_url_and_no_baseline_leaves_the_legacy_url_blank() {
+        let cfg = resolve(None, Some(&overlay(r#"{"collection":"tenant-a"}"#))).unwrap();
+        assert_eq!(cfg.qdrant_url, "");
+        assert_eq!(cfg.collection, "tenant-a");
     }
 
     // ---- resolution: the cross-cluster refusal --------------------------
@@ -769,6 +750,20 @@ mod tests {
         // compares equal, not the same one reused.
         assert!(store.store(full_cfg()).is_ok());
         assert_eq!(store.installed().unwrap().collection, "kb");
+    }
+
+    #[test]
+    fn the_not_configured_message_names_the_resource_first_and_the_legacy_url_second() {
+        let RagError::InvalidInput(msg) = not_configured("collection") else {
+            panic!("expected InvalidInput");
+        };
+        let resource = msg.find("vector-store/qdrant").expect("names the resource");
+        let legacy = msg
+            .find("legacy `qdrant_url`")
+            .expect("names the legacy url");
+        assert!(resource < legacy, "{msg}");
+        assert!(msg.contains("`collection`") && msg.contains("operator") && msg.contains("tenant"));
+        assert!(!msg.contains("lifecycle::init"));
     }
 
     #[test]

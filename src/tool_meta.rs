@@ -9,6 +9,10 @@ pub const DELETE_TOOL: &str = "rag_delete";
 pub const ENSURE_TOOL: &str = "rag_collection_ensure";
 pub const LIST_TOOL: &str = "rag_list";
 
+/// The infrastructure resource every tool needs (declared as `x-requires` at
+/// the root of each tool's `input_schema`).
+pub const INFRA_KIND: &str = "vector-store/qdrant";
+
 pub struct ToolMeta {
     pub name: &'static str,
     pub description: &'static str,
@@ -32,18 +36,20 @@ const HITS_OUTPUT: &str = r#"{
           "payload": { "type": "object" }
         }
       }
-    }
+    },
+    "source": { "type": "string", "enum": ["infra", "legacy"], "description": "Which connection served the call: a connected vector-store/qdrant resource (infra) or the legacy qdrant_url configuration (legacy)." }
   }
 }"#;
 
 const ACK_OUTPUT: &str = r#"{
   "type": "object",
   "required": ["ok"],
-  "properties": { "ok": { "type": "boolean" } }
+  "properties": { "ok": { "type": "boolean" }, "source": { "type": "string", "enum": ["infra", "legacy"], "description": "Which connection served the call: a connected vector-store/qdrant resource (infra) or the legacy qdrant_url configuration (legacy)." } }
 }"#;
 
 const SEARCH_INPUT: &str = r#"{
   "type": "object",
+  "x-requires": [{ "kind": "vector-store/qdrant" }],
   "properties": {
     "query": { "type": "string", "description": "Text to search for. Pass this OR vector, not both." },
     "vector": { "type": "array", "items": { "type": "number" }, "description": "A pre-computed embedding. Pass this OR query, not both." },
@@ -59,6 +65,7 @@ const SEARCH_INPUT: &str = r#"{
 
 const UPSERT_INPUT: &str = r#"{
   "type": "object",
+  "x-requires": [{ "kind": "vector-store/qdrant" }],
   "required": ["id"],
   "properties": {
     "id": { "type": "string", "description": "Point id. Must be an unsigned integer or a UUID." },
@@ -75,6 +82,7 @@ const UPSERT_INPUT: &str = r#"{
 
 const INGEST_INPUT: &str = r#"{
   "type": "object",
+  "x-requires": [{ "kind": "vector-store/qdrant" }],
   "required": ["doc_id", "text"],
   "properties": {
     "doc_id": { "type": "string", "description": "Stable document identifier. Re-ingesting the same doc_id replaces its chunks." },
@@ -86,6 +94,7 @@ const INGEST_INPUT: &str = r#"{
 
 const DELETE_INPUT: &str = r#"{
   "type": "object",
+  "x-requires": [{ "kind": "vector-store/qdrant" }],
   "properties": {
     "ids": { "type": "array", "items": { "type": "string" }, "description": "Point ids to delete. Pass this OR doc_id, not both." },
     "doc_id": { "type": "string", "description": "Delete every chunk of this document. Pass this OR ids, not both." },
@@ -99,6 +108,7 @@ const DELETE_INPUT: &str = r#"{
 
 const ENSURE_INPUT: &str = r#"{
   "type": "object",
+  "x-requires": [{ "kind": "vector-store/qdrant" }],
   "properties": {
     "collection": { "type": "string", "description": "Collection to create. Defaults to the configured one. Rejected when the host supplies a per-tenant collection for the caller." },
     "dimensions": { "type": "integer", "minimum": 1, "description": "Vector width. Defaults to the configured embedding dimensions." },
@@ -108,6 +118,7 @@ const ENSURE_INPUT: &str = r#"{
 
 const LIST_INPUT: &str = r#"{
   "type": "object",
+  "x-requires": [{ "kind": "vector-store/qdrant" }],
   "properties": {
     "limit": { "type": "integer", "minimum": 1, "description": "Max chunks to scan per page (default 50). Chunk counts in the response are only for chunks returned within this page." },
     "offset": { "description": "Opaque page cursor from a previous call's next_page_offset. Omit to start from the first page." },
@@ -131,7 +142,8 @@ const LIST_OUTPUT: &str = r#"{
         }
       }
     },
-    "next_page_offset": { "description": "Present only when another page exists. Pass verbatim as `offset` on the next call." }
+    "next_page_offset": { "description": "Present only when another page exists. Pass verbatim as `offset` on the next call." },
+    "source": { "type": "string", "enum": ["infra", "legacy"], "description": "Which connection served the call: a connected vector-store/qdrant resource (infra) or the legacy qdrant_url configuration (legacy)." }
   }
 }"#;
 
@@ -454,7 +466,7 @@ mod tests {
             .expect("configSchema must declare properties");
         assert!(
             properties.contains_key("qdrant_url"),
-            "configSchema must name qdrant_url — config.rs::resolve treats it as required"
+            "configSchema must still name qdrant_url — it is the legacy source"
         );
         assert!(
             properties.contains_key("collection"),
@@ -468,8 +480,8 @@ mod tests {
             .map(|v| v.as_str().unwrap_or_default())
             .collect::<Vec<_>>();
         assert!(
-            required.contains(&"qdrant_url"),
-            "qdrant_url has no working default and must be required"
+            !required.contains(&"qdrant_url"),
+            "qdrant_url is the legacy source only; a connected Qdrant resource replaces it"
         );
         assert!(
             required.contains(&"collection"),
@@ -759,6 +771,206 @@ mod tests {
         }
     }
 
+    // ---- infrastructure need (vector-store/qdrant) -------------------------
+
+    /// Tool keys present in `describe.json` at 0.5.0. A new key on a tool is
+    /// refused by older designers (`Tool` is `deny_unknown_fields`).
+    const TOOL_KEYS_AT_0_5_0: &[&str] = &[
+        "capabilities",
+        "description",
+        "export",
+        "input_schema",
+        "name",
+        "runtime_ref",
+        "secret_requirements",
+    ];
+
+    fn published_tools() -> Vec<serde_json::Value> {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../describe.json")).expect("describe.json");
+        manifest["contributions"]["tools"]
+            .as_array()
+            .expect("tools array")
+            .clone()
+    }
+
+    /// Mirrors the designer's `requires.rs`: a root `x-requires` array of
+    /// `{kind: string}` objects. The designer repo is not a dependency, so the
+    /// grammar is restated here.
+    fn requires_in_schema(schema: &serde_json::Value) -> Vec<String> {
+        schema
+            .get("x-requires")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i.get("kind").and_then(serde_json::Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn every_tool_declares_the_qdrant_infrastructure_need() {
+        let tools = published_tools();
+        assert_eq!(tools.len(), 6);
+        for entry in &tools {
+            let schema: serde_json::Value =
+                serde_json::from_str(entry["input_schema"].as_str().expect("string schema"))
+                    .expect("schema json");
+            assert_eq!(
+                schema["x-requires"],
+                serde_json::json!([{ "kind": INFRA_KIND }]),
+                "{}: x-requires must sit at the ROOT of input_schema",
+                entry["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn x_requires_is_read_by_the_designers_own_grammar() {
+        for entry in &published_tools() {
+            let schema: serde_json::Value =
+                serde_json::from_str(entry["input_schema"].as_str().unwrap()).unwrap();
+            assert_eq!(requires_in_schema(&schema), vec!["vector-store/qdrant"]);
+        }
+        assert!(requires_in_schema(&serde_json::json!({"type":"object"})).is_empty());
+        // Nested under properties is not a declaration.
+        assert!(
+            requires_in_schema(&serde_json::json!({"properties":{"x-requires":[{"kind":"a/b"}]}}))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn describe_json_declares_no_contributions_key_an_older_designer_would_refuse() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../describe.json")).unwrap();
+        let mut keys: Vec<&str> = manifest["contributions"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec!["tools", "views"],
+            "Contributions/NodeType/Tool are deny_unknown_fields: a new contributions key \
+             unloads this extension on every older designer. Declare needs with `x-requires` \
+             inside a schema instead."
+        );
+    }
+
+    #[test]
+    fn no_tool_gains_an_unknown_field() {
+        for entry in &published_tools() {
+            for key in entry.as_object().unwrap().keys() {
+                assert!(
+                    TOOL_KEYS_AT_0_5_0.contains(&key.as_str()),
+                    "{}: new tool key {key:?} would be refused by older designers",
+                    entry["name"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn x_requires_leaves_the_either_or_constraints_intact() {
+        let schema: serde_json::Value = serde_json::from_str(SEARCH_INPUT).unwrap();
+        assert_eq!(schema["oneOf"].as_array().map(Vec::len), Some(2));
+        assert!(schema["properties"].is_object());
+    }
+
+    fn describe() -> serde_json::Value {
+        serde_json::from_str(include_str!("../describe.json")).expect("describe.json")
+    }
+
+    #[test]
+    fn describe_json_permits_the_infra_secret_uri_verbatim() {
+        let d = describe();
+        let secrets: Vec<&str> = d["runtime"]["permissions"]["secrets"]
+            .as_array()
+            .expect("permissions.secrets")
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        assert!(secrets.contains(&crate::infra::URI), "{secrets:?}");
+        assert!(secrets.contains(&"secret://rag-qdrant/qdrant_api_key"));
+        assert!(secrets.contains(&"secret://rag-qdrant/embedding_api_key"));
+    }
+
+    #[test]
+    fn ops_secret_uris_are_all_declared() {
+        let d = describe();
+        let declared: Vec<&str> = d["runtime"]["permissions"]["secrets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect();
+        for uri in [
+            crate::infra::URI,
+            crate::connection::LEGACY_KEY_REF,
+            crate::ops::EMBEDDING_KEY_REF,
+        ] {
+            assert!(
+                declared.contains(&uri),
+                "{uri} is read by the code but not declared"
+            );
+        }
+    }
+
+    #[test]
+    fn the_qdrant_api_key_is_no_longer_required() {
+        let d = describe();
+        let find = |list: &serde_json::Value, key: &str| -> serde_json::Value {
+            list.as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["key"] == key)
+                .unwrap_or_else(|| panic!("no {key}"))
+                .clone()
+        };
+        let top = &d["requiredSecrets"];
+        assert_eq!(find(top, "rag-qdrant/qdrant_api_key")["required"], false);
+        assert!(
+            find(top, "rag-qdrant/qdrant_api_key")["description"]
+                .as_str()
+                .unwrap()
+                .contains("legacy")
+        );
+        assert_eq!(find(top, "rag-qdrant/embedding_api_key")["required"], true);
+        for tool in d["contributions"]["tools"].as_array().unwrap() {
+            let reqs = &tool["secret_requirements"];
+            assert_eq!(find(reqs, "rag-qdrant/qdrant_api_key")["required"], false);
+            assert_eq!(find(reqs, "rag-qdrant/embedding_api_key")["required"], true);
+        }
+    }
+
+    #[test]
+    fn config_schema_marks_qdrant_url_as_legacy() {
+        let d = describe();
+        let cs: serde_json::Value =
+            serde_json::from_str(d["configSchema"].as_str().unwrap()).unwrap();
+        let desc = cs["properties"]["qdrant_url"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(desc.contains("legacy"), "{desc}");
+        assert!(
+            desc.contains("ignored when a Qdrant resource is connected"),
+            "{desc}"
+        );
+        assert!(
+            !cs["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "qdrant_url")
+        );
+    }
+
     /// Not an assertion — a generator. Prints the `contributions.tools` block
     /// for describe.json so the schemas are never hand-copied out of sync.
     /// Run: `cargo test print_contributions -- --ignored --nocapture`
@@ -777,7 +989,7 @@ mod tests {
                     "description": t.description,
                     "input_schema": t.input_schema_json,
                     "secret_requirements": [
-                        {"key": "rag-qdrant/qdrant_api_key", "required": true, "format": "text"},
+                        {"key": "rag-qdrant/qdrant_api_key", "required": false, "format": "text"},
                         {"key": "rag-qdrant/embedding_api_key", "required": true, "format": "text"}
                     ]
                 })

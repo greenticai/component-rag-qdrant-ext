@@ -96,6 +96,96 @@ per-call overlay wins field by field; the one exception is `qdrant_url`, which a
 overlay may supply but may not use to contradict an `init` that already pinned
 the cluster. See [Collections and tenancy](#collections-and-tenancy).
 
+### Connect a Qdrant resource (recommended)
+
+This extension declares the **`vector-store/qdrant`**
+infrastructure resource as a need: `"x-requires": [{"kind": "vector-store/qdrant"}]`
+sits at the root of every tool's `input_schema` in `describe.json`. The
+designer's deploy gate refuses to deploy a unit that uses this extension until a
+Qdrant resource is connected to the workspace (**Resources** page; the deploy
+error offers a "Provide" action). The admin resolves which resource applies and
+the host hands it to the extension at call time through the guest secret
+`secret://infra/vector_store_qdrant`, a JSON document with the base URL, the
+credential and `extras`. The extension reads it with `host.secrets.get`
+(`src/infra.rs`); nothing in this repository ever stores or logs the credential.
+
+**Precedence, decided once per call** (`src/connection.rs`):
+
+| Situation | What the call uses |
+|---|---|
+| A Qdrant resource is connected | The resource: its base URL and credential. A leftover overlay `qdrant_url` is ignored. |
+| No resource connected, overlay/baseline `qdrant_url` set | The **legacy** source: `qdrant_url` + `secret://rag-qdrant/qdrant_api_key`. |
+| Neither | A named error mentioning `vector-store/qdrant`. There is no default host. |
+| A resource is connected but unreadable, malformed, or of a newer document version | An error. It **never** falls back to the legacy source: a broken credential must not quietly route traffic to another cluster. |
+
+**Which source served a call.** Every tool output carries a non-secret
+`source` (`"infra"` for a connected resource, `"legacy"` for the `qdrant_url`
+configuration). The host reports "not connected" in different words per lane,
+and all of them select the legacy source when a `qdrant_url` is configured
+(classification is on the phrase, whether the host error is a `NotFound` or a
+`Backend` error):
+
+| Lane | Host wording (phrase matched) |
+|---|---|
+| In-process designer (Run Demo, in-process Test chat, tool invoke) | `secret not found: secret://infra/...` |
+| Deployed unit (Plan B runner) | `... is not connected to this deployment` |
+| Out-of-process serve path | `... not available on the out-of-process serve path` |
+| Test-chat runner sidecar | the serve-path wording above |
+
+A deployed worker whose infra staging failed (or was never run: unit-scoped
+re-ships, session lanes, operator-env) is indistinguishable from "nothing
+connected" and **silently uses the legacy configuration**, reading and writing
+unprefixed collection names. Check `source` in the tool output to confirm which
+cluster was used.
+
+Known gap: the sandbox allow-list in `describe.json` names no port, which
+matches 443 only, so a Qdrant on `:6333` is refused by the runtime sandbox.
+This is tracked as a separate task and is not fixed in this release.
+
+**Isolation inside a shared instance.** The resource's `extras.collection_prefix`
+is prepended to every collection name (`connection::physical_collection`):
+logical `kb` becomes `acme__kb`. Tool outputs always echo the *logical* name.
+A resource without a `collection_prefix` fails closed (error naming the setting),
+unless its `extras.isolation` is `dedicated` (a Qdrant only one tenant uses), in
+which case names are used unprefixed. No tool ever lists collections, so a shared
+instance cannot be enumerated. The tenant-pinned overlay `collection` rule is
+unchanged and composes with the prefix: the overlay picks the logical name, the
+prefix is applied after.
+
+**`collection_prefix` must end with `__`.** Logical collection names may not
+contain `__`, and a prefix must end with it, so `prefix + name` can be decoded
+uniquely (without this, prefix `a` + name `b__kb` would collide with prefix `ab__`
++ name `kb`). A resource whose prefix does not end with `__` fails closed with an
+error naming `collection_prefix`. This binds the admin: every `collection_prefix`
+it generates or accepts for a `vector-store/qdrant` resource MUST end with `__`.
+
+**Port.** The resource's `port` must be Qdrant's **REST port** (6333 by default).
+This extension speaks REST only; a gRPC port (6334) shows up as a connection
+error naming `host:port`.
+
+**Flow nodes.** The tools are reachable from an agentic worker (and from a flow's
+agent node), but a plain `component.exec` flow node cannot read the infrastructure
+secret, and this extension contributes no flow node types. Do not expect a flow
+node to use the resource.
+
+**Network allow-list (not solved here).** `runtime.permissions.network` is static
+(`https://*.qdrant.io/*`, `https://api.openai.com/*`). A resource whose host is
+outside `*.qdrant.io` (self-hosted or platform-managed) is rejected by the sandbox
+before it leaves it, until the runtime treats the host of a connected resource as
+allowed for the extension that declared the need. UNVERIFIED: not exercised
+against a live runtime.
+
+## Migrating from the legacy Qdrant configuration
+
+Existing installs keep working: until a Qdrant resource is connected, the overlay
+`qdrant_url` and `rag-qdrant/qdrant_api_key` are used exactly as in `0.5.0`
+(unprefixed collection names). After you connect a resource, collections are
+`collection_prefix` + name on the resource's cluster, which is a different, empty
+place: **there is no automatic migration, so re-ingest your documents** (or keep
+the legacy source until you have). Remove the old key afterwards. Note that the
+deploy gate requires a resource for new deploys; it is the Run Demo and Test chat
+lanes, which have no infrastructure overlay, that rely on the legacy source.
+
 ### Secrets
 
 This repo has no CLI for setting secret *values* — the host that loads the
@@ -116,7 +206,7 @@ embeddings API instead of the network:
 cargo test ingest_deletes_the_document_before_upserting_its_chunks -- --nocapture
 ```
 
-or run everything with `cargo test` (136 tests, milliseconds, no WASM runtime
+or run everything with `cargo test` (the host suite, milliseconds, no WASM runtime
 involved — see [Testing](#testing)). To call a tool for real, install the
 built `.gtxpack` (above) into a Designer or agentic worker instance and give
 it the config and secrets above — that step happens outside this repo.
@@ -131,13 +221,14 @@ gtdx validate && gtdx lint
 
 The same JSON document on both channels — the per-call `_tenant_overlay` and,
 optionally, `lifecycle::init`. Every field is optional on each channel
-individually; what matters is that `qdrant_url` and `collection` are set
-*somewhere* by the time a call arrives. Unknown keys are ignored, so a host may
+individually; what matters is that `collection` is set, and that a Qdrant is
+reachable: a connected Qdrant resource, or else the legacy `qdrant_url`,
+by the time a call arrives. Unknown keys are ignored, so a host may
 send more of the document than this version reads.
 
 | Field | Required | Default | Notes |
 |---|---|---|---|
-| `qdrant_url` | yes | — | e.g. `https://xyz.qdrant.io:6333`. Trailing slash is stripped. An overlay may set it; it may not contradict one an `init` already pinned. |
+| `qdrant_url` | no (legacy) | — | The legacy source, used only while no Qdrant resource is connected; ignored once one is. e.g. `https://xyz.qdrant.io:6333`. Trailing slash is stripped. An overlay may set it; it may not contradict one an `init` already pinned. |
 | `collection` | yes | — | The collection this tenant's data lives in. See [Collections and tenancy](#collections-and-tenancy). |
 | `embedding.base_url` | no | `https://api.openai.com/v1` | `/embeddings` is appended. Any OpenAI-shaped API. |
 | `embedding.model` | no | `text-embedding-3-small` | |
@@ -154,7 +245,11 @@ none exists yet.
 
 ## Secrets
 
-`rag-qdrant/qdrant_api_key` and `rag-qdrant/embedding_api_key`.
+`rag-qdrant/embedding_api_key` (required: the embeddings API key; no embedding
+resource kind exists yet) and, for the legacy source only,
+`rag-qdrant/qdrant_api_key` (optional). The connected Qdrant
+resource's credential arrives through `secret://infra/vector_store_qdrant` and is
+declared in `runtime.permissions.secrets` too.
 
 ## Tool reference
 
@@ -647,7 +742,7 @@ allowed to import `bindings::`. Everywhere else — `ops.rs`, `qdrant.rs`,
 `embed.rs`, `chunk.rs`, `config.rs`, `input.rs`, `error.rs` — takes `&impl
 HostCalls` generically, and tests substitute the SDK's `MockHttpClient` /
 `MockSecretsBackend` (from `greentic-extension-sdk-testing`) instead of a real
-transport. That's what makes 136 tests run in milliseconds on the host instead
+transport. That's what makes 201 tests run in milliseconds on the host instead
 of requiring a WASM runtime or a live Qdrant cluster.
 
 `src/ops.rs` is the only module that sequences more than one host call for a
@@ -666,12 +761,12 @@ before writing your first tool.
 ## Testing
 
 ```
-cargo test                    # 136 tests, ~milliseconds, no WASM runtime
+cargo test                    # 201 tests, ~milliseconds, no WASM runtime
 ./ci/local_check.sh           # fmt + clippy -D warnings + test + build
 gtdx validate && gtdx lint    # describe.json against schema + cross-field invariants
 ```
 
-There are 136 unit tests and zero integration tests against a real Qdrant.
+There are 201 unit tests and zero integration tests against a real Qdrant.
 That is the point of the pure/host-boundary split above: every tool's logic —
 argument validation, request construction, response parsing, and the
 ordering across multiple host calls — runs against `MockHttpClient` /
@@ -753,6 +848,7 @@ copying along with the code.
 
 - **Qdrant 1.10 or newer.** Search uses the Query API (`/points/query`); the
   legacy `/points/search` path is not used.
+- **A connected Qdrant resource outside `*.qdrant.io` needs the runtime to allow its host** (see [Connect a Qdrant resource](#connect-a-qdrant-resource-recommended)).
 - **`runtime.permissions.network` in `describe.json` grants `https://*.qdrant.io/*`.**
   Qdrant **Cloud** works out of the box — that wildcard covers every tenant's
   cluster host, no editing required. **Self-hosted** Qdrant is not covered:
@@ -793,6 +889,9 @@ gtdx publish       # produce dist/greentic.rag-qdrant-<version>.gtxpack + instal
 - `src/ops.rs`    — orchestration: the only module that sequences more than one
   host call per tool
 - `src/tool_meta.rs` — static tool metadata (schemas, capabilities, agentic-worker hints); also generates `describe.json`'s `contributions.tools` block
+- `src/infra.rs`, `src/connection.rs` — the typed reader for the connected
+  `vector-store/qdrant` resource, and the per-call source resolution
+  (resource, else legacy) plus the collection prefix
 - `src/input.rs`, `src/qdrant.rs`, `src/embed.rs`, `src/chunk.rs`, `src/config.rs`, `src/error.rs`
   — pure modules: argument parsing, Qdrant request/response handling, the
   embeddings client, text chunking, operator config, and the error type

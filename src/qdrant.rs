@@ -190,13 +190,25 @@ pub fn delete_request(
     )
 }
 
-/// Map a Qdrant HTTP status onto the extension's error taxonomy.
+/// Prefix of the error for a 401/403. `connection::Connection::attribute`
+/// rewrites it to say WHICH credential was rejected; keep the two in step.
+pub const REJECTED_PREFIX: &str = "Qdrant rejected the api-key";
+
+/// Longest slice of a Qdrant response body that may enter an error message.
+const MAX_BODY_IN_ERROR: usize = 200;
+
+/// Map a Qdrant HTTP status onto the extension's error taxonomy. The body is
+/// truncated; callers that know a credential scrub it from the body first
+/// (`ops::send`), so truncation never leaves a partial key behind.
 fn status_error(status: u16, body: &[u8]) -> Option<RagError> {
-    let text = String::from_utf8_lossy(body).into_owned();
+    let text: String = String::from_utf8_lossy(body)
+        .chars()
+        .take(MAX_BODY_IN_ERROR)
+        .collect();
     match status {
         200..=299 => None,
         401 | 403 => Some(RagError::PermissionDenied(format!(
-            "Qdrant rejected the api-key (HTTP {status}): {text}"
+            "{REJECTED_PREFIX} (HTTP {status}): {text}"
         ))),
         404 => Some(RagError::NotFound(format!(
             "Qdrant returned 404 — collection or point missing: {text}"

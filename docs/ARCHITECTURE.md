@@ -9,7 +9,7 @@ both this document and `README.md`, see
 [`docs/HOW-TO-MAKE-A-RAG-EXTENSION.md`](HOW-TO-MAKE-A-RAG-EXTENSION.md).
 
 All facts below were checked against the code at the commit this document was written
-against (`v0.5.0`, 136 tests passing). Where a claim could not be checked against
+against (`v0.5.0`, 201 tests passing). Where a claim could not be checked against
 something in this repository, that is said explicitly rather than assumed.
 
 ## The one rule, before anything else
@@ -29,7 +29,7 @@ bindings, and it is also the only place in the crate allowed to import `bindings
 Every other module — `ops.rs`, `qdrant.rs`, `embed.rs`, `chunk.rs`, `config.rs`,
 `input.rs`, `error.rs`, `tool_meta.rs` — takes `&impl HostCalls` generically, and tests
 substitute `greentic-extension-sdk-testing`'s `MockHttpClient` / `MockSecretsBackend`
-instead of a real transport. That is what makes 136 tests run in milliseconds on the
+instead of a real transport. That is what makes 201 tests run in milliseconds on the
 host instead of requiring a WASM runtime or a live Qdrant cluster.
 
 If you copy this layout for a new extension: a `bindings::` call in a pure module passes
@@ -166,16 +166,17 @@ admin console screen for this extension is wired up today. `embedding` and `chun
 deliberately absent from it: both are nested objects, and the renderer that consumes
 this schema falls through to raw JSON for anything it cannot turn into flat form
 fields, so declaring them would promise a control the renderer cannot produce. Only
-`qdrant_url` and `collection` are marked `required`, because `config.rs::resolve` gives
-every other field a working default. Kept honest by
+`collection` is marked `required` (`qdrant_url` is the legacy source,
+used only while no `vector-store/qdrant` resource is connected, so a form must not
+demand it), because `config.rs::resolve` gives every other field a working default. Kept honest by
 `tool_meta::tests::describe_json_config_schema_parses_and_names_the_required_fields`,
-which parses the string as JSON and asserts both required fields are named — the
+which parses the string as JSON and asserts the fields are named — the
 describe is data, so nothing else in the suite would catch a typo in it.
 
 `runtime.permissions` is the capability gate the running extension is held to:
 `network` (an exact-match/wildcard host allowlist any `http::fetch` call is checked
 against — here `https://*.qdrant.io/*` and `https://api.openai.com/*`), `secrets` (URIs
-the host will resolve — here `secret://rag-qdrant/qdrant_api_key` and
+the host will resolve — here `secret://infra/vector_store_qdrant`, `secret://rag-qdrant/qdrant_api_key` and
 `secret://rag-qdrant/embedding_api_key`, matched verbatim against the same string
 literals `ops.rs` uses, `QDRANT_KEY_REF`/`EMBEDDING_KEY_REF`), `callExtensionKinds`
 (empty — this extension never calls another extension via the `broker` interface it
@@ -287,7 +288,7 @@ overlay wins, since it is the more specific and more recent statement of the sam
 path into `//collections/...`), defaults the embedding to the OpenAI triple and
 `chunk.max_chars`/`chunk.overlap_chars` to 1200/150, and then range-checks the merged
 result (cross-field checks like `overlap_chars < max_chars` are only meaningful after
-the merge). The one field an overlay may not *change* is `qdrant_url`: it may supply
+the merge). The one field an overlay may not *change* is `qdrant_url` (the legacy source; ignored when a `vector-store/qdrant` resource is connected): it may supply
 one, but contradicting a cluster `lifecycle::init` already pinned is refused, because
 this instance's Qdrant credential and network allow-list are instance-wide. A baseline,
 when one exists at all, is stored in a process-wide
@@ -530,6 +531,18 @@ back — but doing so unconditionally would also refuse every call on a single-t
 install, which by definition never has an overlay to send. Both `src/config.rs`'s own
 doc comment and `README.md`'s "Where this is still not airtight" section state this
 plainly, and the code and tests back both statements up without qualification.
+
+## Infrastructure resource and the Qdrant connection
+
+`describe.json` declares the `vector-store/qdrant` need as `x-requires` at the root of
+each tool's `input_schema`. At call time `connection::resolve_connection` asks the host
+for `secret://infra/vector_store_qdrant` (parsed by `infra::InfraConnection`), and only
+when the host says the resource is not connected does it fall back to the legacy overlay
+`qdrant_url` + `secret://rag-qdrant/qdrant_api_key`. Tenant isolation inside a shared
+instance is the resource's `extras.collection_prefix`, applied once by
+`connection::physical_collection`; tool outputs echo the logical name. Contract with the admin: a `collection_prefix` MUST end with `__`, and logical names may not contain `__`, so prefix + name decodes uniquely. The resource's
+`port` is Qdrant's REST port. The network allow-list is static and does not yet cover
+hosts outside `*.qdrant.io`.
 
 ## Tenant isolation
 

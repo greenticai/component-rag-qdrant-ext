@@ -42,6 +42,11 @@ repository. This is a Greentic Designer **design** extension scaffolded by
 - `src/qdrant.rs`         — Qdrant REST request builders and response parsers.
 - `src/embed.rs`          — OpenAI-shaped embeddings client (request/response).
 - `src/chunk.rs`          — character-window text splitting for `rag_ingest`.
+- `src/infra.rs`          — typed, pure reader for the guest document of the
+  `vector-store/qdrant` infrastructure resource (`secret://infra/vector_store_qdrant`);
+  value-free errors, `Debug` never shows the credential.
+- `src/connection.rs`     — per-call source resolution (infra -> legacy -> error)
+  and `physical_collection` (the only place a prefix is applied).
 - `src/config.rs`         — configuration: the per-call `_tenant_overlay`, the optional
                             `lifecycle::init` baseline, and the merge between them.
 - `src/error.rs`          — the extension's own error type; only `lib.rs` maps
@@ -299,6 +304,25 @@ the overlay is per-call, and one instance serves many tenants.
 
 Read [README.md § Collections and tenancy](README.md#collections-and-tenancy),
 especially "Where this is still not airtight", before changing any of it.
+
+## Infrastructure resource (`vector-store/qdrant`)
+
+- **Declaration.** `"x-requires": [{"kind": "vector-store/qdrant"}]` at the ROOT of
+  each tool's `input_schema` (`tool_meta.rs`, mirrored in `describe.json`). Never a
+  new `contributions` key: `Contributions`, `NodeType` and `Tool` are
+  `deny_unknown_fields`, so a new key unloads the extension on every older
+  designer. A ratchet in `tool_meta.rs` pins this.
+- **Precedence: infra -> legacy -> error**, in `connection::resolve_connection`.
+  Infra present but unreadable/invalid/newer never falls back to legacy. No default
+  host exists anywhere.
+- **Isolation.** `extras.collection_prefix` (or `extras.isolation == "dedicated"`)
+  via `Connection::physical`; legacy names stay unprefixed; outputs echo logical
+  names; no tool lists collections.
+- **Credential hygiene.** Never `format!`/log the credential or the raw document.
+  serde errors are mapped to fixed strings. Host and Qdrant error text goes through
+  `connection::redact_all` before it can enter a message.
+- **Flow nodes can't use it** (a `component.exec` node cannot read the secret), and
+  this extension still declares no node types.
 
 ## Secrets
 
