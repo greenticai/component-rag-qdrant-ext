@@ -49,7 +49,7 @@ const ACK_OUTPUT: &str = r#"{
 
 const SEARCH_INPUT: &str = r#"{
   "type": "object",
-  "x-requires": [{ "kind": "vector-store/qdrant" }],
+  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"] }],
   "properties": {
     "query": { "type": "string", "description": "Text to search for. Pass this OR vector, not both." },
     "vector": { "type": "array", "items": { "type": "number" }, "description": "A pre-computed embedding. Pass this OR query, not both." },
@@ -65,7 +65,7 @@ const SEARCH_INPUT: &str = r#"{
 
 const UPSERT_INPUT: &str = r#"{
   "type": "object",
-  "x-requires": [{ "kind": "vector-store/qdrant" }],
+  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"] }],
   "required": ["id"],
   "properties": {
     "id": { "type": "string", "description": "Point id. Must be an unsigned integer or a UUID." },
@@ -82,7 +82,7 @@ const UPSERT_INPUT: &str = r#"{
 
 const INGEST_INPUT: &str = r#"{
   "type": "object",
-  "x-requires": [{ "kind": "vector-store/qdrant" }],
+  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"] }],
   "required": ["doc_id", "text"],
   "properties": {
     "doc_id": { "type": "string", "description": "Stable document identifier. Re-ingesting the same doc_id replaces its chunks." },
@@ -94,7 +94,7 @@ const INGEST_INPUT: &str = r#"{
 
 const DELETE_INPUT: &str = r#"{
   "type": "object",
-  "x-requires": [{ "kind": "vector-store/qdrant" }],
+  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"] }],
   "properties": {
     "ids": { "type": "array", "items": { "type": "string" }, "description": "Point ids to delete. Pass this OR doc_id, not both." },
     "doc_id": { "type": "string", "description": "Delete every chunk of this document. Pass this OR ids, not both." },
@@ -108,7 +108,7 @@ const DELETE_INPUT: &str = r#"{
 
 const ENSURE_INPUT: &str = r#"{
   "type": "object",
-  "x-requires": [{ "kind": "vector-store/qdrant" }],
+  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"] }],
   "properties": {
     "collection": { "type": "string", "description": "Collection to create. Defaults to the configured one. Rejected when the host supplies a per-tenant collection for the caller." },
     "dimensions": { "type": "integer", "minimum": 1, "description": "Vector width. Defaults to the configured embedding dimensions." },
@@ -118,7 +118,7 @@ const ENSURE_INPUT: &str = r#"{
 
 const LIST_INPUT: &str = r#"{
   "type": "object",
-  "x-requires": [{ "kind": "vector-store/qdrant" }],
+  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"] }],
   "properties": {
     "limit": { "type": "integer", "minimum": 1, "description": "Max chunks to scan per page (default 50). Chunk counts in the response are only for chunks returned within this page." },
     "offset": { "description": "Opaque page cursor from a previous call's next_page_offset. Omit to start from the first page." },
@@ -251,6 +251,9 @@ pub fn all_tools() -> Vec<ToolMeta> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Must match the `hint` published in every `x-requires` entry.
+    const INFRA_HINT: &str = "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.";
 
     #[test]
     fn all_six_tools_are_listed() {
@@ -811,8 +814,12 @@ mod tests {
                     .expect("schema json");
             assert_eq!(
                 schema["x-requires"],
-                serde_json::json!([{ "kind": INFRA_KIND }]),
-                "{}: x-requires must sit at the ROOT of input_schema",
+                serde_json::json!([{
+                    "kind": INFRA_KIND,
+                    "hint": INFRA_HINT,
+                    "schemes": ["https"]
+                }]),
+                "{}: x-requires must sit at the ROOT of input_schema and carry the hint and schemes",
                 entry["name"]
             );
         }
