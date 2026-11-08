@@ -762,19 +762,10 @@ RUNTIME_REF=<runtime_ref> cargo test print_contributions -- --ignored --nocaptur
 and paste the printed JSON block into `describe.json`'s `contributions.tools`
 by hand — this is a generator, not a check, and nothing runs it for you.
 
-If your extension takes operator configuration, also declare a top-level
-`configSchema` — a JSON Schema, as a string — naming the fields an admin
-console can turn into a labelled form instead of a raw JSON editor. This
-repo's is worth copying as a template: it names only `qdrant_url`,
-`collection` and `require_tenant_overlay`, the flat fields with no working
-default or a real default worth exposing, and deliberately leaves out
-`embedding`/`chunk` because the renderer this schema targets falls through
-to raw JSON for nested objects — declaring one would promise a form control
-it cannot produce. `configSchema` is a manifest field newer than some `gtdx`
-releases understand: `DescribeJson` denies unknown fields, so an old `gtdx`
-rejects the whole describe outright rather than ignoring the one field it
-doesn't recognise. Pin your CI's `gtdx` version accordingly (see this repo's
-`.github/workflows/check.yml`).
+Do not declare a top-level `configSchema` in `describe.json`: `DescribeJson` denies
+unknown fields and the key exists only in some contract lanes, so a runtime built on
+another lane refuses to load the whole extension (`'configSchema' was unexpected`).
+Describe operator-facing fields in `contributions.nodeTypes[].config_schema`.
 
 Validate after every edit:
 
