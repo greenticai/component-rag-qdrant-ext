@@ -142,7 +142,7 @@ Fields split cleanly into authored and generated:
   repository,keywords}`; `compat.{min_designer_version,min_runner_version,
   contract_version}`; `capabilities.{offered,required}` (mirrors the `manifest::Guest`
   impl in `lib.rs`); `runtime.memoryLimitMB`; `runtime.permissions.{network,secrets,
-  callExtensionKinds,ui}`; `requiredSecrets`; `contributions.views`; `configSchema`.
+  callExtensionKinds,ui}`; `requiredSecrets`; `contributions.views`.
   `contributions.nodeTypes` is also authored by hand — currently to an empty list,
   deliberately; see `AGENTS.md`'s "No flow node types" section for why.
 - **Generated, never hand-edit:** the `sha256` fields under `runtime.components` —
@@ -156,22 +156,13 @@ Fields split cleanly into authored and generated:
   Unlike its neighbouring `sha256` field, `gtdx publish` never writes this one, so it
   drifts silently if a release bumps the package version everywhere else.
 
-**`configSchema`** — a top-level string holding a JSON Schema for this extension's
-*operator*-facing configuration (added in `0.5.0`; the field itself is unknown to a
-`gtdx` older than `1.2.19`, which is why CI's `GTDX_VERSION` is pinned there — see
-`.github/workflows/check.yml`). It exists so a generic admin-console configuration UI
-can render a labelled form for `qdrant_url`, `collection` and
-`require_tenant_overlay` instead of a raw JSON editor, once such a UI exists — no
-admin console screen for this extension is wired up today. `embedding` and `chunk` are
-deliberately absent from it: both are nested objects, and the renderer that consumes
-this schema falls through to raw JSON for anything it cannot turn into flat form
-fields, so declaring them would promise a control the renderer cannot produce. Only
-`collection` is marked `required` (`qdrant_url` is the legacy source,
-used only while no `vector-store/qdrant` resource is connected, so a form must not
-demand it), because `config.rs::resolve` gives every other field a working default. Kept honest by
-`tool_meta::tests::describe_json_config_schema_parses_and_names_the_required_fields`,
-which parses the string as JSON and asserts the fields are named — the
-describe is data, so nothing else in the suite would catch a typo in it.
+**No top-level `configSchema`.** 0.5.0 added one for a generic admin-console form, and
+0.6.1 failed to load in a kind e2e run with `'configSchema' was unexpected`: `DescribeJson`
+is `deny_unknown_fields`, and the key exists only in the contract on the sdk `main` lane
+(v1.2.18+), not on the develop/research lanes the runtime is built from. It was removed.
+Operator-facing fields live in `contributions.nodeTypes[].config_schema`, which every
+contract version accepts. `tool_meta::tests::describe_json_has_only_top_level_keys_every_contract_accepts`
+pins the allowed top-level keys.
 
 `runtime.permissions` is the capability gate the running extension is held to:
 `network` (an exact-match/wildcard host allowlist any `http::fetch` call is checked

@@ -79,14 +79,10 @@ or one tenant's override, with a JSON document shaped like the
 }
 ```
 
-`describe.json` also declares a top-level `configSchema` — a JSON Schema
-naming `qdrant_url`, `collection` and `require_tenant_overlay` as a labelled
-form — so that a *generic* admin-console configuration UI can render one for
-this extension once it exists, instead of a raw JSON editor. It is data for
-that future renderer, not a configuration screen in itself. `embedding` and
-`chunk` are deliberately left out of it: both are nested objects, the
-renderer falls through to raw JSON for anything it can't turn into flat
-fields, and declaring them would promise a form control it cannot produce.
+`describe.json` deliberately has no top-level `configSchema`: the typed describe
+contract denies unknown fields and only some contract lanes know that key, so a
+runtime built on another lane refuses to load the extension. Configuration
+fields are described by `contributions.nodeTypes[].config_schema` instead.
 
 `lifecycle::init` takes the same document as a process-wide baseline and is
 still supported — but it is **optional, and unused in practice**: the host

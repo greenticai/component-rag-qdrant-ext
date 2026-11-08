@@ -438,55 +438,45 @@ mod tests {
         }
     }
 
-    /// `describe.json`'s top-level `configSchema` is a *string* holding a
-    /// JSON Schema — the describe is data, and nothing else in this suite
-    /// touches it, so a typo (unbalanced quotes, a dropped field) would
-    /// otherwise ship unnoticed while `cargo test`, clippy and `gtdx lint`
-    /// all stayed green. `config.rs::resolve` treats `qdrant_url` and
-    /// `collection` as the only two fields with no working default (see its
-    /// module docs), so this also pins that the form the admin console
-    /// renders actually asks for both of them.
+    /// `DescribeJson` in `greentic-extension-sdk-contract` is
+    /// `deny_unknown_fields`, so a top-level key the runtime's contract
+    /// version does not know unloads the whole extension (0.6.1 shipped a
+    /// top-level `configSchema`, which only the contract on the sdk `main`
+    /// lane knows; the develop and research lanes the runtime is built on
+    /// reject it). Operator-facing config schemas belong in
+    /// `contributions.nodeTypes[].config_schema`, which every contract
+    /// version accepts. This pins the top-level key set.
     #[test]
-    fn describe_json_config_schema_parses_and_names_the_required_fields() {
+    fn describe_json_has_only_top_level_keys_every_contract_accepts() {
+        const ALLOWED: &[&str] = &[
+            "$schema",
+            "apiVersion",
+            "kind",
+            "compat",
+            "metadata",
+            "engine",
+            "capabilities",
+            "runtime",
+            "execution",
+            "contributions",
+            "localization",
+            "signature",
+            "manifestSha256",
+            "requiredSecrets",
+            "secret_requirements",
+        ];
         let manifest: serde_json::Value = serde_json::from_str(include_str!("../describe.json"))
             .expect("describe.json must be valid JSON");
-        let config_schema_str = manifest["configSchema"]
-            .as_str()
-            .expect("describe.json must have a top-level configSchema string");
-
-        let config_schema: serde_json::Value =
-            serde_json::from_str(config_schema_str).expect("configSchema must parse as JSON");
-        assert!(
-            config_schema.is_object(),
-            "configSchema must parse to a JSON object, not {config_schema}"
-        );
-
-        let properties = config_schema["properties"]
+        for key in manifest
             .as_object()
-            .expect("configSchema must declare properties");
-        assert!(
-            properties.contains_key("qdrant_url"),
-            "configSchema must still name qdrant_url — it is the legacy source"
-        );
-        assert!(
-            properties.contains_key("collection"),
-            "configSchema must name collection — config.rs::resolve treats it as required"
-        );
-
-        let required = config_schema["required"]
-            .as_array()
-            .expect("configSchema must declare a required array")
-            .iter()
-            .map(|v| v.as_str().unwrap_or_default())
-            .collect::<Vec<_>>();
-        assert!(
-            !required.contains(&"qdrant_url"),
-            "qdrant_url is the legacy source only; a connected Qdrant resource replaces it"
-        );
-        assert!(
-            required.contains(&"collection"),
-            "collection has no working default and must be required"
-        );
+            .expect("describe.json is an object")
+            .keys()
+        {
+            assert!(
+                ALLOWED.contains(&key.as_str()),
+                "top-level `{key}` is rejected by runtimes whose contract does not know it"
+            );
+        }
     }
 
     /// The tools that would become flow palette entries, if this extension
@@ -947,28 +937,6 @@ mod tests {
             assert_eq!(find(reqs, "rag-qdrant/qdrant_api_key")["required"], false);
             assert_eq!(find(reqs, "rag-qdrant/embedding_api_key")["required"], true);
         }
-    }
-
-    #[test]
-    fn config_schema_marks_qdrant_url_as_legacy() {
-        let d = describe();
-        let cs: serde_json::Value =
-            serde_json::from_str(d["configSchema"].as_str().unwrap()).unwrap();
-        let desc = cs["properties"]["qdrant_url"]["description"]
-            .as_str()
-            .unwrap();
-        assert!(desc.contains("legacy"), "{desc}");
-        assert!(
-            desc.contains("ignored when a Qdrant resource is connected"),
-            "{desc}"
-        );
-        assert!(
-            !cs["required"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|v| v == "qdrant_url")
-        );
     }
 
     /// Not an assertion — a generator. Prints the `contributions.tools` block
