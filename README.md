@@ -164,12 +164,13 @@ agent node), but a plain `component.exec` flow node cannot read the infrastructu
 secret, and this extension contributes no flow node types. Do not expect a flow
 node to use the resource.
 
-**Network allow-list (not solved here).** `runtime.permissions.network` is static
-(`https://*.qdrant.io/*`, `https://api.openai.com/*`). A resource whose host is
-outside `*.qdrant.io` (self-hosted or platform-managed) is rejected by the sandbox
-before it leaves it, until the runtime treats the host of a connected resource as
-allowed for the extension that declared the need. UNVERIFIED: not exercised
-against a live runtime.
+**Network allow-list.** `runtime.permissions.network` keeps its static host
+patterns (`https://*.qdrant.io/*`, `https://api.openai.com/*`) and also lists the
+token `infra://vector-store/qdrant`, the kind this extension's `x-requires`
+declares. A runtime that implements the infra network grant (greentic-ext-runtime
+1.2.42617795385 or newer) then allows the host of the connected Qdrant resource
+for this extension, https only; older runtimes ignore the token and keep the
+static patterns. UNVERIFIED: not exercised end to end against a real runtime.
 
 ## Migrating from the legacy Qdrant configuration
 

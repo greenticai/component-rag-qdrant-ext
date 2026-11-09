@@ -53,7 +53,8 @@
       "network": [
         "https://*.qdrant.io/*",
         "https://*.qdrant.io:6333/*",
-        "https://api.openai.com/*"
+        "https://api.openai.com/*",
+        "infra://vector-store/qdrant"
       ],
       "secrets": [
         "secret://infra/vector_store_qdrant",

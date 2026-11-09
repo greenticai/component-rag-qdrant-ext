@@ -999,4 +999,42 @@ mod tests {
             );
         }
     }
+
+    /// The runtime grants a connected resource's host only to an extension that
+    /// lists `infra://<kind>` in its network permissions, and the kind must be
+    /// the one its own `x-requires` entries declare. Older runtimes ignore the
+    /// token; the host patterns keep working there.
+    #[test]
+    fn network_lists_the_infra_token_matching_x_requires() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../describe.json")).expect("valid describe.json");
+        let network: Vec<&str> = manifest["runtime"]["permissions"]["network"]
+            .as_array()
+            .expect("runtime.permissions.network")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        let mut kinds = std::collections::BTreeSet::new();
+        for tool in manifest["contributions"]["tools"]
+            .as_array()
+            .expect("tools")
+        {
+            let schema: serde_json::Value =
+                serde_json::from_str(tool["input_schema"].as_str().expect("input_schema"))
+                    .expect("input_schema is JSON");
+            for need in schema["x-requires"].as_array().into_iter().flatten() {
+                kinds.insert(need["kind"].as_str().expect("kind").to_string());
+            }
+        }
+        assert!(!kinds.is_empty(), "no x-requires found");
+        for kind in &kinds {
+            let token = format!("infra://{kind}");
+            assert!(
+                network.contains(&token.as_str()),
+                "{token} missing in {network:?}"
+            );
+        }
+        let infra = network.iter().filter(|p| p.starts_with("infra://")).count();
+        assert_eq!(infra, kinds.len(), "{network:?}");
+    }
 }
