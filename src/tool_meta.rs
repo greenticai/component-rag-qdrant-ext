@@ -49,7 +49,7 @@ const ACK_OUTPUT: &str = r#"{
 
 const SEARCH_INPUT: &str = r#"{
   "type": "object",
-  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"] }],
+  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"], "hosting": {"image":"qdrant/qdrant","tag":"v1.12.5","port":6333,"protocol":"http","auth":{"env":"QDRANT__SERVICE__API_KEY","header":"api-key"},"health":{"path":"/healthz"},"data":{"path":"/qdrant/storage"},"env":{"QDRANT__STORAGE__SNAPSHOTS_PATH":"/qdrant/storage/snapshots"},"run_as":{"uid":1000},"sizes":{"small":{"cpu":512,"memory_mib":1024}}} }],
   "properties": {
     "query": { "type": "string", "description": "Text to search for. Pass this OR vector, not both." },
     "vector": { "type": "array", "items": { "type": "number" }, "description": "A pre-computed embedding. Pass this OR query, not both." },
@@ -65,7 +65,7 @@ const SEARCH_INPUT: &str = r#"{
 
 const UPSERT_INPUT: &str = r#"{
   "type": "object",
-  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"] }],
+  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"], "hosting": {"image":"qdrant/qdrant","tag":"v1.12.5","port":6333,"protocol":"http","auth":{"env":"QDRANT__SERVICE__API_KEY","header":"api-key"},"health":{"path":"/healthz"},"data":{"path":"/qdrant/storage"},"env":{"QDRANT__STORAGE__SNAPSHOTS_PATH":"/qdrant/storage/snapshots"},"run_as":{"uid":1000},"sizes":{"small":{"cpu":512,"memory_mib":1024}}} }],
   "required": ["id"],
   "properties": {
     "id": { "type": "string", "description": "Point id. Must be an unsigned integer or a UUID." },
@@ -82,7 +82,7 @@ const UPSERT_INPUT: &str = r#"{
 
 const INGEST_INPUT: &str = r#"{
   "type": "object",
-  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"] }],
+  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"], "hosting": {"image":"qdrant/qdrant","tag":"v1.12.5","port":6333,"protocol":"http","auth":{"env":"QDRANT__SERVICE__API_KEY","header":"api-key"},"health":{"path":"/healthz"},"data":{"path":"/qdrant/storage"},"env":{"QDRANT__STORAGE__SNAPSHOTS_PATH":"/qdrant/storage/snapshots"},"run_as":{"uid":1000},"sizes":{"small":{"cpu":512,"memory_mib":1024}}} }],
   "required": ["doc_id", "text"],
   "properties": {
     "doc_id": { "type": "string", "description": "Stable document identifier. Re-ingesting the same doc_id replaces its chunks." },
@@ -94,7 +94,7 @@ const INGEST_INPUT: &str = r#"{
 
 const DELETE_INPUT: &str = r#"{
   "type": "object",
-  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"] }],
+  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"], "hosting": {"image":"qdrant/qdrant","tag":"v1.12.5","port":6333,"protocol":"http","auth":{"env":"QDRANT__SERVICE__API_KEY","header":"api-key"},"health":{"path":"/healthz"},"data":{"path":"/qdrant/storage"},"env":{"QDRANT__STORAGE__SNAPSHOTS_PATH":"/qdrant/storage/snapshots"},"run_as":{"uid":1000},"sizes":{"small":{"cpu":512,"memory_mib":1024}}} }],
   "properties": {
     "ids": { "type": "array", "items": { "type": "string" }, "description": "Point ids to delete. Pass this OR doc_id, not both." },
     "doc_id": { "type": "string", "description": "Delete every chunk of this document. Pass this OR ids, not both." },
@@ -108,7 +108,7 @@ const DELETE_INPUT: &str = r#"{
 
 const ENSURE_INPUT: &str = r#"{
   "type": "object",
-  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"] }],
+  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"], "hosting": {"image":"qdrant/qdrant","tag":"v1.12.5","port":6333,"protocol":"http","auth":{"env":"QDRANT__SERVICE__API_KEY","header":"api-key"},"health":{"path":"/healthz"},"data":{"path":"/qdrant/storage"},"env":{"QDRANT__STORAGE__SNAPSHOTS_PATH":"/qdrant/storage/snapshots"},"run_as":{"uid":1000},"sizes":{"small":{"cpu":512,"memory_mib":1024}}} }],
   "properties": {
     "collection": { "type": "string", "description": "Collection to create. Defaults to the configured one. Rejected when the host supplies a per-tenant collection for the caller." },
     "dimensions": { "type": "integer", "minimum": 1, "description": "Vector width. Defaults to the configured embedding dimensions." },
@@ -118,7 +118,7 @@ const ENSURE_INPUT: &str = r#"{
 
 const LIST_INPUT: &str = r#"{
   "type": "object",
-  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"] }],
+  "x-requires": [{ "kind": "vector-store/qdrant", "hint": "Qdrant must be reachable over https on a *.qdrant.io host (for example Qdrant Cloud): the extension runs in a sandbox with a fixed network allow-list.", "schemes": ["https"], "hosting": {"image":"qdrant/qdrant","tag":"v1.12.5","port":6333,"protocol":"http","auth":{"env":"QDRANT__SERVICE__API_KEY","header":"api-key"},"health":{"path":"/healthz"},"data":{"path":"/qdrant/storage"},"env":{"QDRANT__STORAGE__SNAPSHOTS_PATH":"/qdrant/storage/snapshots"},"run_as":{"uid":1000},"sizes":{"small":{"cpu":512,"memory_mib":1024}}} }],
   "properties": {
     "limit": { "type": "integer", "minimum": 1, "description": "Max chunks to scan per page (default 50). Chunk counts in the response are only for chunks returned within this page." },
     "offset": { "description": "Opaque page cursor from a previous call's next_page_offset. Omit to start from the first page." },
@@ -812,8 +812,14 @@ mod tests {
             let schema: serde_json::Value =
                 serde_json::from_str(entry["input_schema"].as_str().expect("string schema"))
                     .expect("schema json");
+            // `hosting` is pinned by its own test below.
+            let mut declared = schema["x-requires"].clone();
+            declared[0]
+                .as_object_mut()
+                .expect("entry")
+                .remove("hosting");
             assert_eq!(
-                schema["x-requires"],
+                declared,
                 serde_json::json!([{
                     "kind": INFRA_KIND,
                     "hint": INFRA_HINT,
@@ -975,6 +981,44 @@ mod tests {
             serde_json::to_string_pretty(&serde_json::json!({ "tools": entries })).unwrap()
         );
     }
+    /// Every tool declares the same dedicated-hosting spec inside its
+    /// `x-requires` entry (never a new `contributions` key), with a pinned tag.
+    /// The admin validates it strictly; this guards the declaration itself.
+    #[test]
+    fn every_x_requires_entry_declares_the_same_pinned_hosting() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../describe.json")).expect("valid describe.json");
+        let mut seen: Vec<serde_json::Value> = Vec::new();
+        for tool in manifest["contributions"]["tools"]
+            .as_array()
+            .expect("tools")
+        {
+            let schema: serde_json::Value =
+                serde_json::from_str(tool["input_schema"].as_str().expect("input_schema"))
+                    .expect("input_schema is JSON");
+            let hosting = schema["x-requires"][0]["hosting"].clone();
+            assert!(
+                hosting.is_object(),
+                "{}: hosting must be an object",
+                tool["name"]
+            );
+            seen.push(hosting);
+        }
+        assert!(
+            seen.windows(2).all(|w| w[0] == w[1]),
+            "tools disagree on hosting"
+        );
+        let h = &seen[0];
+        assert_eq!(h["image"], "qdrant/qdrant");
+        let tag = h["tag"].as_str().expect("tag");
+        assert!(
+            tag.starts_with('v') && tag != "latest",
+            "tag must be pinned: {tag}"
+        );
+        assert_eq!(h["port"], 6333);
+        assert!(serde_json::to_vec(h).unwrap().len() <= 4096);
+    }
+
     /// The host matches a pattern's port exactly and a pattern without one
     /// means 443, so `https://*.qdrant.io/*` alone refuses Qdrant Cloud's
     /// REST port. Both entries are needed, and none may be a catch-all.
